@@ -1,0 +1,1118 @@
+"""Tests pinned to the worked examples in network.md and animation.md.
+
+Run with: python -m pytest tests/ -q     (or plain `python tests/test_protocol.py`)
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pytest
+
+from pyrava import (
+    AnimationScript,
+    Command,
+    EncodeError,
+    HexInt,
+    SubPacket,
+    disassemble,
+    encode_batch,
+    encode_block,
+    encode_body,
+    parse_batch,
+    parse_body,
+    rgb,
+)
+from pyrava.client import BaravaDevice, new_sender_id
+from pyrava.const import Handler
+from pyrava.errors import BaravaError, CompileError
+
+
+# ---------------------------------------------------------------- key/value
+
+def test_scalar_decoding_matches_docs():
+    assert parse_body("<NUMBER_VALUE=!12345>") == {"NUMBER_VALUE": 12345}
+    assert parse_body("<HEX_VALUE=$FF>") == {"HEX_VALUE": 255}
+    assert parse_body("<STRING_VALUE=&my string>") == {"STRING_VALUE": "my string"}
+
+
+def test_array_decoding_matches_docs():
+    assert parse_body("<NUMBER_ARRAY=!{1,2,3,4,5}>") == {
+        "NUMBER_ARRAY": [1, 2, 3, 4, 5]
+    }
+    assert parse_body("<HEX_ARRAY=${00,FF,0F,CF}>") == {
+        "HEX_ARRAY": [0, 255, 15, 207]
+    }
+    assert parse_body("<STRING_ARRAY=&{hello,world,stuff}>") == {
+        "STRING_ARRAY": ["hello", "world", "stuff"]
+    }
+
+
+def test_empty_body():
+    assert parse_body("<>") == {}
+    assert encode_body() == "<>"
+
+
+def test_encoding_round_trips():
+    for source in (
+        "<NUMBER_VALUE=!12345>",
+        "<STRING_VALUE=&my string>",
+        "<NUMBER_ARRAY=!{1,2,3,4,5}>",
+        "<STRING_ARRAY=&{hello,world,stuff}>",
+    ):
+        assert encode_body(parse_body(source)) == source
+
+
+def test_hex_marker_is_opt_in():
+    assert encode_block("FCLR", HexInt(0xFF00FF)) == "<FCLR=$FF00FF>"
+    assert encode_block("FCLR", 0xFF00FF) == "<FCLR=!16711935>"
+
+
+def test_spectrum_body_matches_docs():
+    body = encode_body({"SPLT": [255, 0, 0, 0, 255, 0], "SPON": 1})
+    assert body == "<SPLT=!{255,0,0,0,255,0}><SPON=!1>"
+
+
+def test_reserved_characters_are_rejected():
+    with pytest.raises(EncodeError):
+        encode_block("DVNM", "name<with>delims")
+
+
+def test_heterogeneous_arrays_are_rejected():
+    with pytest.raises(EncodeError):
+        encode_body({"MIXED": [1, "two"]})
+
+
+# -------------------------------------------------------------------- batch
+
+DOC_BATCH = (
+    "<<xxyyzz112233=&200>={{{<HEADER1=!1234>,<HEADER2=$FF>},<BODY1=&hello>},"
+    "{{<HEADER_ABC=&world>},<BODY2=!4567>}}>"
+)
+
+
+def test_batch_decoding_matches_docs():
+    batch = parse_batch(DOC_BATCH)
+    assert batch.sender_id == "xxyyzz112233"
+    assert batch.ping_interval == 200
+    assert len(batch) == 2
+
+    first, second = batch.packets
+    assert first.headers == {
+        "device-id": "xxyyzz112233",
+        "ping-interval": 200,
+        "HEADER1": 1234,
+        "HEADER2": 255,
+    }
+    assert first.body == {"BODY1": "hello"}
+    assert second.headers == {
+        "device-id": "xxyyzz112233",
+        "ping-interval": 200,
+        "HEADER_ABC": "world",
+    }
+    assert second.body == {"BODY2": 4567}
+
+
+def test_batch_accepts_the_separatorless_variant():
+    """The group/desk-light example concatenates sub-packets without commas."""
+    source = (
+        "<<xxyyzz112233=&100>={{{<body-handler=&DVAGR>},"
+        "<GRNM=&group-name><GRID=&group-id>}"
+        "{{<body-handler=&DSKST>},<DSTT=!1>}}>"
+    )
+    batch = parse_batch(source)
+    assert [p.handler for p in batch] == ["DVAGR", "DSKST"]
+    assert batch.packets[0].body == {"GRNM": "group-name", "GRID": "group-id"}
+    assert batch.packets[1].body == {"DSTT": 1}
+
+
+def test_batch_encoding_round_trips():
+    encoded = encode_batch(
+        "xxyyzz112233",
+        100,
+        [
+            SubPacket("DVAGR", {"GRNM": "group-name", "GRID": "group-id"}),
+            SubPacket("DSKST", {"DSTT": 1}),
+        ],
+    )
+    batch = parse_batch(encoded)
+    assert [p.handler for p in batch] == ["DVAGR", "DSKST"]
+    assert batch.ping_interval == 100
+    assert batch.flatten() == {
+        "GRNM": "group-name",
+        "GRID": "group-id",
+        "DSTT": 1,
+    }
+
+
+def test_batch_flatten_and_lookup():
+    batch = parse_batch(DOC_BATCH)
+    assert batch.flatten() == {"BODY1": "hello", "BODY2": 4567}
+    assert batch.packets[0].get("BODY1") == "hello"
+
+
+# ------------------------------------------------------------------- client
+
+def test_wildcard_sender_id_is_refused():
+    with pytest.raises(BaravaError, match="wildcard|keep-alive|not a valid"):
+        BaravaDevice("192.0.2.10", sender_id="*")
+
+
+def test_generated_sender_ids_are_unique_and_clean():
+    a, b = new_sender_id(), new_sender_id()
+    assert a != b
+    assert not set(a) & set("<>={},!&$")
+
+
+def test_rgb_packing():
+    assert rgb(255, 0, 0) == 0xFF0000
+    assert rgb(0, 255, 0) == 0x00FF00
+    with pytest.raises(ValueError):
+        rgb(256, 0, 0)
+
+
+# ---------------------------------------------------------------- animation
+
+def test_gradient_rotate_script_compiles_to_expected_bytes():
+    """The first practical example in animation.md."""
+    script = AnimationScript()
+    with script.header(0):
+        script.select_zone(0)
+        script.select_zone(3)
+        script.build_gradient()
+        script.append_gradient(0, 255, 0, 0)
+        script.append_gradient(255, 0, 0, 255)
+        script.map_linear()
+        script.deselect_all()
+    with script.thread(0):
+        with script.main():
+            with script.atomic():
+                script.select_zone(0)
+                script.select_zone(3)
+                script.rotate_left(5)
+                script.deselect_zone(0)
+                script.deselect_zone(3)
+
+    assert script.compile() == bytes(
+        [
+            Command.SCRIPT_HEADER,
+            Command.OPEN_HEADER, 0,
+            Command.SELECT_ZONE, 0,
+            Command.SELECT_ZONE, 3,
+            Command.BUILD_GRADIENT,
+            Command.APPEND_GRADIENT, 0, 255, 0, 0,
+            Command.APPEND_GRADIENT, 255, 0, 0, 255,
+            Command.MAP_LINEAR,
+            Command.DESELECT_ALL,
+            Command.CLOSE_HEADER,
+            Command.OPEN_THREAD, 0,
+            Command.START_SCOPE_MAIN,
+            Command.START_SCOPE_ATOMIC,
+            Command.SELECT_ZONE, 0,
+            Command.SELECT_ZONE, 3,
+            Command.ROTATE_LEFT, 5,
+            Command.DESELECT_ZONE, 0,
+            Command.DESELECT_ZONE, 3,
+            Command.END_SCOPE_ATOMIC,
+            Command.END_SCOPE_MAIN,
+            Command.CLOSE_THREAD,
+        ]
+    )
+
+
+def test_loop_parameter_is_two_bytes():
+    script = AnimationScript()
+    with script.header(0):
+        script.select_zone(4)
+    with script.thread(0):
+        with script.main():
+            with script.loop(5):
+                with script.atomic():
+                    script.select_zone(4)
+                    script.rotate_left(5)
+                    script.deselect_zone(4)
+
+    data = script.compile()
+    # A naive byte search would match a zone parameter, so anchor on the
+    # preceding START_SCOPE_MAIN opcode instead.
+    index = data.index(bytes([Command.START_SCOPE_MAIN, Command.START_SCOPE_LOOP])) + 1
+    assert data[index : index + 3] == bytes([Command.START_SCOPE_LOOP, 0x00, 0x05])
+    assert "START_SCOPE_LOOP(iterations=5)" in "\n".join(disassemble(data))
+
+
+def test_hex_payload_is_uppercase_and_even_length():
+    script = AnimationScript()
+    with script.header(0):
+        script.fill_zone(255, 128, 0)
+    with script.thread(0):
+        script.rotate_left(1)
+    payload = script.to_hex()
+    assert payload.isupper() or payload.isdigit()
+    assert len(payload) % 2 == 0
+    assert bytes.fromhex(payload) == script.compile()
+
+
+def test_zone_bounds_are_enforced():
+    script = AnimationScript()
+    with pytest.raises(CompileError, match="zone 9 out of range"):
+        with script.header(0):
+            script.select_zone(9)
+
+
+def test_unclosed_scope_is_caught():
+    script = AnimationScript()
+    script.emit(Command.OPEN_HEADER, 0)
+    script._scopes.append("header")
+    with pytest.raises(CompileError, match="unclosed scope"):
+        script.compile()
+
+
+def test_arity_is_enforced():
+    script = AnimationScript(strict=False)
+    with pytest.raises(CompileError, match="takes 3 parameter"):
+        script.emit(Command.FILL_ZONE, 255)
+
+
+def test_disassembler_round_trips():
+    script = AnimationScript()
+    with script.header(0):
+        script.gradient((0, 255, 0, 0), (255, 0, 0, 255))
+    with script.thread(0):
+        with script.main():
+            script.rotate_right(3)
+
+    lines = disassemble(script.to_hex())
+    assert "OPEN_HEADER(thread_index=0)" in lines[1]
+    assert any("ROTATE_RIGHT(amount=3)" in line for line in lines)
+    assert lines[0] == "SCRIPT_HEADER"
+
+
+def test_mismatched_header_and_thread_warns():
+    script = AnimationScript()
+    with script.header(0):
+        script.select_all()
+    with script.thread(1):
+        script.rotate_left(1)
+    with pytest.warns(UserWarning, match="no matching"):
+        script.compile()
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ------------------------------------------------- endpoint & queue semantics
+
+INFO_BODY = "<DVNM=&Desk Lamp><DVID=&68b6b33d3b38><DVVR=&1.0.0><DVTP=!0><DVST=!1>"
+HEAT_BODY = "<HTCT=!6930><HTST=!7000><HTHH=!100>"
+
+
+class _DeferredDevice:
+    """Mock firmware: each reply is flushed on the NEXT request, not this one."""
+
+    def __init__(self):
+        self.queue = []
+        self.log = []
+
+    def send(self, headers, body):
+        self.log.append((headers.get("body-handler"), body, dict(headers)))
+        flush, self.queue = self.queue, []
+        handler = headers.get("body-handler")
+        if handler == "DVIFO":
+            self.queue.append("{{<body-handler=&DVIFO>}," + INFO_BODY + "}")
+        elif handler == "HTIFO":
+            self.queue.append("{{<body-handler=&HTIFO>}," + HEAT_BODY + "}")
+        if not flush:
+            return ""
+        sid = headers["device-id"]
+        interval = headers["ping-interval"]
+        return f"<<{sid}=&{interval}>={{{','.join(flush)}}}>"
+
+    def close(self):
+        pass
+
+
+def _device(**kwargs):
+    fake = _DeferredDevice()
+    return BaravaDevice("192.0.2.10", transport=fake, **kwargs), fake
+
+
+def test_default_endpoint_is_the_real_one():
+    from pyrava.transport import HttpTransport
+
+    assert HttpTransport("192.168.1.249").url == (
+        "http://192.168.1.249:8080/barava-host-post"
+    )
+
+
+def test_deferred_reply_is_collected_by_polling():
+    device, fake = _device()
+    info = device.get_device_info()
+    assert info["DVID"] == "68b6b33d3b38"
+    assert device.device_id == "68b6b33d3b38"
+    # command, then a bare queue-pop ping
+    assert [h for h, _, _ in fake.log] == ["DVIFO", None]
+    assert fake.log[1][1] == ""  # plain pings carry no body
+
+
+def test_setters_do_not_poll():
+    device, fake = _device()
+    device.set_fill_color((255, 0, 0))  # RGB tuple -> converted to hue
+    assert [h for h, _, _ in fake.log] == ["COLFL"]
+
+
+def test_session_id_travels_as_device_id_header():
+    device, fake = _device(sender_id="~A1B2C3D4E5F6")
+    device.ping()
+    headers = fake.log[0][2]
+    assert headers["device-id"] == "~A1B2C3D4E5F6"
+    assert headers["ping-interval"] == "2000"
+    assert "body-handler" not in headers
+
+
+def test_generated_ids_match_the_app_shape():
+    ident = new_sender_id()
+    assert ident.startswith("~") and len(ident) == 13
+    assert ident[1:].isupper() or ident[1:].isdigit()
+
+
+def test_heater_temperature_scaling():
+    device, _ = _device()
+    assert device.read_temperature_f() == 69.30
+    assert device.read_temperatures_f() == {"current": 69.30, "target": 70.00}
+
+
+def test_deprecated_celsius_aliases_convert_correctly():
+    """These used to relabel raw Fahrenheit as Celsius; now they convert."""
+    device, _ = _device()
+    with pytest.warns(DeprecationWarning):
+        assert device.read_temperature_c() == pytest.approx((69.30 - 32) * 5 / 9, abs=0.01)
+    with pytest.warns(DeprecationWarning):
+        assert device.read_target_temperature_c() == pytest.approx(
+            (70.00 - 32) * 5 / 9, abs=0.01
+        )
+    with pytest.warns(DeprecationWarning):
+        both = device.read_temperatures_c()
+    assert both["current"] == pytest.approx((69.30 - 32) * 5 / 9, abs=0.01)
+    assert both["target"] == pytest.approx((70.00 - 32) * 5 / 9, abs=0.01)
+
+
+def test_flatten_filters_by_handler():
+    batch = parse_batch(
+        "<<~ABC=&2000>={{{<body-handler=&DVIFO>}," + INFO_BODY + "},"
+        "{{<body-handler=&HTIFO>}," + HEAT_BODY + "}}>"
+    )
+    assert batch.handlers == ["DVIFO", "HTIFO"]
+    assert "HTCT" not in batch.flatten("DVIFO")
+    assert batch.flatten("HTIFO")["HTCT"] == 6930
+    assert batch.first("HTIFO").get("HTHH") == 100
+
+
+def test_mdns_name_yields_device_id():
+    from pyrava.discovery import DiscoveredService
+
+    service = DiscoveredService("barava68b6b33d3b38", "192.168.1.249", 8080)
+    assert service.device_id == "68b6b33d3b38"
+    assert DiscoveredService("printer", "10.0.0.5", 80).device_id is None
+
+
+# ------------------------------------------------- response shape tolerance
+
+_BODY = "<DVNM=&Desk Lamp><DVID=&68b6b33d3b38><DVST=!1>"
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        # bare array, as in the Sub Parsing worked example
+        "<<~ABC=&2000>={{{<body-handler=&DVIFO>}," + _BODY + "}}>",
+        # string-marked array, as in the spec's own template
+        "<<~ABC=&2000>=&{{{<body-handler=&DVIFO>}," + _BODY + "}}>",
+        # every level marked
+        "<<~ABC=&2000>=&{&{&{<body-handler=&DVIFO>},&" + _BODY + "}}>",
+    ],
+)
+def test_batch_value_marker_is_optional(frame):
+    from pyrava import parse_response
+
+    batch = parse_response(frame)
+    assert batch.handlers == ["DVIFO"]
+    assert batch.flatten()["DVID"] == "68b6b33d3b38"
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "<<~ABC=&2000>=&{}>",     # empty queue, marked
+        "<<~ABC=&2000>={}>",      # empty queue, bare
+        "<<~ABC=&2000>=<>>",      # empty queue, empty block
+        "",                        # no content at all
+        "not a packet at all",     # junk
+    ],
+)
+def test_empty_and_junk_frames_do_not_raise(frame):
+    from pyrava import parse_response
+
+    batch = parse_response(frame)
+    assert batch.flatten() == {}
+    assert batch.raw == frame
+
+
+def test_inline_body_without_array_wrapper():
+    from pyrava import parse_response
+
+    batch = parse_response("<<~ABC=&2000>=" + _BODY + ">")
+    assert batch.sender_id == "~ABC"
+    assert batch.ping_interval == 2000
+    assert batch.flatten()["DVNM"] == "Desk Lamp"
+
+
+def test_strict_mode_still_raises():
+    from pyrava import ParseError, parse_response
+
+    with pytest.raises(ParseError):
+        parse_response("<<~ABC=&2000>=???>", strict=True)
+
+
+# ------------------------------------------- captured firmware 1.0.1 frame
+
+CAPTURED = (
+    "<<68b6b33d3b38=&200>=&{{{<body-handler=&DVIFO>},<DVNM=&Barava>"
+    "<DVGR=&{<545d577b=&My-Room>}><FCLR=!0><FBRT=!255><DCLR=!292><DBRT=!10>"
+    "<DVTP=!0><DDSN=&02.12.2026.17.57.49.1.2000><DPIN=!0><DVVR=&1.0.1>"
+    "<SPON=!0><HTVR=!23><CHRV=!1><HSTT=!0><FSTT=!1><DSTT=!0><DVST=!0>"
+    "<DMTT=!1><VHSM=!1><DPEN=!0>}}>"
+)
+
+
+class _Replay:
+    def __init__(self, raw=CAPTURED):
+        self.raw = raw
+        self.sent = []
+
+    def send(self, headers, body):
+        self.sent.append((dict(headers), body))
+        return self.raw
+
+    def close(self):
+        pass
+
+
+def test_captured_frame_decodes_fully():
+    from pyrava import parse_response
+
+    batch = parse_response(CAPTURED)
+    assert batch.device_id == "68b6b33d3b38"
+    assert batch.ping_interval == 200
+    assert batch.handlers == ["DVIFO"]
+    info = batch.flatten("DVIFO")
+    assert info["DVNM"] == "Barava"
+    assert info["DVVR"] == "1.0.1"
+    assert info["DDSN"] == "02.12.2026.17.57.49.1.2000"
+    assert info["HTVR"] == 23
+    assert len(info) == 20
+
+
+def test_device_id_comes_from_the_key_block_not_dvid():
+    """Firmware 1.0.1 omits DVID from DVIFO entirely."""
+    fake = _Replay()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    info = device.get_device_info()
+    assert "DVID" not in info
+    assert device.device_id == "68b6b33d3b38"
+    assert device.name == "Barava"
+
+
+def test_reported_interval_is_adopted():
+    fake = _Replay()
+    device = BaravaDevice("192.0.2.10", transport=fake, ping_interval=2000)
+    device.get_device_info()
+    assert device.reported_ping_interval == 200
+    assert device.ping_interval == 200
+
+    fake2 = _Replay()
+    pinned = BaravaDevice(
+        "192.0.2.10", transport=fake2, ping_interval=2000,
+        follow_device_interval=False,
+    )
+    pinned.get_device_info()
+    assert pinned.reported_ping_interval == 200
+    assert pinned.ping_interval == 2000
+
+
+def test_group_blocks_decode_to_a_mapping():
+    from pyrava import parse_groups
+
+    fake = _Replay()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    device.get_device_info()
+    assert device.groups == {"545d577b": "My-Room"}
+    assert parse_groups(["<a1=&Kitchen>", "<b2=&Den>"]) == {
+        "a1": "Kitchen",
+        "b2": "Den",
+    }
+
+
+def test_outbound_batch_matches_the_device_dialect():
+    """Keyed on the device ID, sub-packet array string-marked."""
+    fake = _Replay()
+    device = BaravaDevice("192.0.2.10", transport=fake, sender_id="~A1B2C3D4E5F6")
+    device.register()
+    device.send_batch([SubPacket("DSKST", {"DSTT": 1})])
+    body = fake.sent[-1][1]
+    assert body.startswith("<<68b6b33d3b38=&200>=&{")
+    assert fake.sent[-1][0]["batched-packet"] == ""
+    # the session ID still identifies us in the HTTP header
+    assert fake.sent[-1][0]["device-id"] == "~A1B2C3D4E5F6"
+    round_tripped = parse_batch(body)
+    assert round_tripped.handlers == ["DSKST"]
+
+
+def test_batch_marker_can_be_disabled():
+    body = encode_batch("68b6b33d3b38", 200, [SubPacket("DSKST", {"DSTT": 1})],
+                        marker="")
+    assert body.startswith("<<68b6b33d3b38=&200>={")
+    assert parse_batch(body).handlers == ["DSKST"]
+
+
+# ----------------------------------------------------------- discovery bits
+
+def test_device_id_extraction_variants():
+    from pyrava.discovery import DiscoveredService
+
+    def ident(**kw):
+        kw.setdefault("host", "1.2.3.4")
+        kw.setdefault("port", 8080)
+        return DiscoveredService(**kw).device_id
+
+    # "barava" is itself made of hex letters; the prefix must be stripped
+    # before searching or the match slides left by one character.
+    assert ident(name="barava68b6b33d3b38") == "68b6b33d3b38"
+    assert ident(name="Barava-68B6B33D3B38") == "68b6b33d3b38"
+    assert ident(name="x", server="barava-68b6b33d3b38.local") == "68b6b33d3b38"
+    assert ident(name="Barava Light", properties={"mac": "68:b6:b3:3d:3b:38"}) == (
+        "68b6b33d3b38"
+    )
+    assert ident(name="HP LaserJet", server="printer.local") is None
+
+
+def test_barava_hint_detection():
+    from pyrava.discovery import DiscoveredService
+
+    yes = DiscoveredService("Barava Light", "1.2.3.4", 8080)
+    no = DiscoveredService("Sonos Kitchen", "1.2.3.5", 1400)
+    assert yes.looks_like_barava
+    assert not no.looks_like_barava
+
+
+def test_ipv6_addresses_are_not_dropped():
+    """inet_ntoa raises on 16-byte packing; that used to discard the service."""
+    import socket as _socket
+
+    from pyrava.discovery import _addresses_of
+
+    class _Info:
+        addresses = [
+            _socket.inet_pton(_socket.AF_INET6, "fe80::1"),
+            _socket.inet_aton("192.168.1.249"),
+        ]
+
+    assert _addresses_of(_Info()) == ["fe80::1", "192.168.1.249"]
+
+
+# ------------------------------------------------------------ CLI plumbing
+
+def test_cli_colour_parsing():
+    from pyrava.__main__ import _parse_rgb
+
+    assert _parse_rgb("#FF8000") == (0xFF, 0x80, 0x00)
+    assert _parse_rgb("FF8000") == (0xFF, 0x80, 0x00)
+    assert _parse_rgb("255,128,0") == (255, 128, 0)
+    with pytest.raises(ValueError):
+        _parse_rgb("1,2")
+
+
+def test_cli_boolish():
+    import argparse
+
+    from pyrava.__main__ import _boolish
+
+    assert _boolish("on") is True
+    assert _boolish("OFF") is False
+    with pytest.raises(argparse.ArgumentTypeError):
+        _boolish("maybe")
+
+
+def test_cli_parser_builds_every_subcommand():
+    from pyrava.__main__ import build_parser
+
+    parser = build_parser()
+    for command in ["discover", "info", "heater", "set", "raw", "watch", "doctor"]:
+        args = parser.parse_args([command] if command != "raw" else [command, "DVIFO"])
+        assert callable(args.func)
+
+
+def test_version_is_single_sourced():
+    """pyproject reads __version__ via dynamic metadata; keep them in step."""
+    import pyrava
+
+    assert pyrava.__version__.count(".") == 2
+
+
+# ------------------------------------------------------- polling keepalive
+
+class _DeferredEventDevice:
+    """Mock firmware: replies queue and flush one ping later, like the real
+    device. Used to prove keepalive=[...] produces continuous callbacks."""
+
+    INFO = "<DVNM=&Desk Lamp><DVID=&x>"
+    HEAT = "<HTCT=!6930><HTST=!7000>"
+
+    def __init__(self):
+        self.queue = []
+        self.calls = []
+
+    def send(self, headers, body):
+        self.calls.append(body)
+        flush, self.queue = self.queue, []
+        wants_info = headers.get("body-handler") == "DVIFO" or "DVIFO" in body
+        wants_heat = headers.get("body-handler") == "HTIFO" or "HTIFO" in body
+        if wants_info:
+            self.queue.append("{{<body-handler=&DVIFO>}," + self.INFO + "}")
+        if wants_heat:
+            self.queue.append("{{<body-handler=&HTIFO>}," + self.HEAT + "}")
+        if not flush:
+            return ""
+        return f"<<abc123456789=&200>=&{{{','.join(flush)}}}>"
+
+    def close(self):
+        pass
+
+
+def test_bare_ping_keepalive_never_triggers_callbacks():
+    """This was the reported bug: keepalive=None requests nothing new, so
+    subscriptions never fire even though the loop is running."""
+    import time
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)
+    seen = []
+    session = device.poll(interval=0.03)  # keepalive=None, the old default
+    session.on(Handler.DEVICE_INFO, lambda p: seen.append(p.body))
+    time.sleep(0.15)
+    session.stop()
+    assert seen == []
+    assert all(body == "" for body in fake.calls)
+
+
+def test_keepalive_list_produces_continuous_callbacks():
+    import time
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)
+    device.device_id = "68b6b33d3b38"  # normally set by register()
+    seen = []
+    session = device.poll(
+        interval=0.03, keepalive=[Handler.DEVICE_INFO, Handler.GET_HEATER_INFO]
+    )
+    session.on(Handler.DEVICE_INFO, lambda p: seen.append(("info", p.body)))
+    session.on(Handler.GET_HEATER_INFO, lambda p: seen.append(("heat", p.body)))
+    time.sleep(0.2)
+    session.stop()
+    kinds = {k for k, _ in seen}
+    assert kinds == {"info", "heat"}
+    assert len(seen) >= 4  # several ticks' worth, not a one-off
+
+
+def test_keepalive_single_handler_still_works():
+    """The pre-existing single-handler form must keep working unchanged."""
+    import time
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)
+    seen = []
+    session = device.poll(interval=0.03, keepalive=Handler.GET_HEATER_INFO)
+    session.on(Handler.GET_HEATER_INFO, lambda p: seen.append(p.body))
+    time.sleep(0.15)
+    session.stop()
+    assert len(seen) >= 1
+    assert seen[0]["HTCT"] == 6930
+
+
+def test_unregistered_batch_warning_is_throttled(caplog):
+    """send_batch before device_id is known should warn once, not per tick."""
+    import logging
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)  # never registered
+    with caplog.at_level(logging.WARNING, logger="pyrava"):
+        for _ in range(3):
+            device.send_batch([SubPacket("DVIFO", {})])
+    warnings_seen = [r for r in caplog.records if "batching before" in r.message]
+    assert len(warnings_seen) == 1
+
+
+# --------------------------------------------------------------- CLI watch
+
+def test_redraw_plain_fallback_when_not_a_tty(capsys, monkeypatch):
+    from pyrava.__main__ import _Redraw
+
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    redraw = _Redraw()  # ansi=None -> auto-detect -> False, since not a tty
+    assert redraw.ansi is False
+    redraw.render(["a", "b"])
+    redraw.render(["a (updated)", "b"])
+    out = capsys.readouterr().out
+    assert out.count("a") >= 2  # scrolled, not redrawn in place
+    assert "\x1b[" not in out
+
+
+def test_redraw_ansi_path_moves_cursor_and_clears_lines(capsys):
+    from pyrava.__main__ import _Redraw
+
+    redraw = _Redraw(ansi=True)
+    redraw.render(["one", "two"])
+    redraw.render(["one (updated)", "two"])
+    out = capsys.readouterr().out
+    assert "\x1b[2A" in out  # moves up by the line count of the first block
+    assert "\x1b[2K" in out  # clears each line before rewriting
+
+
+def test_watch_command_populates_status_from_deferred_replies():
+    """Same fixture shape as the earlier keepalive tests; checks cmd_watch's
+    own callbacks build the right summary strings, not just that *a*
+    callback fires."""
+    import argparse
+    import threading
+    import time
+
+    from pyrava import __main__ as cli
+
+    info = ("<DVNM=&Desk Lamp><DVVR=&1.0.1><DVST=!1><FSTT=!1>"
+            "<FCLR=!16744448><FBRT=!200><DSTT=!0><DBRT=!10>")
+    heat = "<HTCT=!6930><HTST=!7000><HTHH=!100>"
+
+    class Fake:
+        def __init__(self):
+            self.queue = []
+
+        def send(self, headers, body):
+            flush, self.queue = self.queue, []
+            if headers.get("body-handler") == "DVIFO" or "DVIFO" in body:
+                self.queue.append("{{<body-handler=&DVIFO>}," + info + "}")
+            if headers.get("body-handler") == "HTIFO" or "HTIFO" in body:
+                self.queue.append("{{<body-handler=&HTIFO>}," + heat + "}")
+            if not flush:
+                return ""
+            return f"<<68b6b33d3b38=&200>=&{{{','.join(flush)}}}>"
+
+        def close(self):
+            pass
+
+    device = BaravaDevice("192.0.2.10", transport=Fake())
+    device.register()
+
+    captured = {}
+    original_connect = cli._connect
+    cli._connect = lambda args: device
+    try:
+        args = argparse.Namespace(
+            host="192.0.2.10", port=8080, timeout=5.0, json=False, interval=0.02
+        )
+
+        def stop_soon():
+            time.sleep(0.15)
+            import _thread
+            _thread.interrupt_main()
+
+        threading.Thread(target=stop_soon, daemon=True).start()
+        # Patch _Redraw to just capture the final rendered state instead of
+        # writing escape codes into the test's stdout.
+        from pyrava import __main__ as cli_mod
+
+            
+        class _Capture:
+            def __init__(self, ansi=None):
+                pass
+
+            def render(self, lines):
+                captured["lines"] = lines
+
+            def finish(self, message):
+                captured["finished"] = message
+
+        monkey = cli_mod._Redraw
+        cli_mod._Redraw = _Capture
+        try:
+            try:
+                cli.cmd_watch(args)
+            except KeyboardInterrupt:
+                pass
+        finally:
+            cli_mod._Redraw = monkey
+    finally:
+        cli._connect = original_connect
+
+    lines = "\n".join(captured["lines"])
+    assert "Desk Lamp" in lines
+    assert "fill on" in lines
+    assert "69.30" in lines and "70.00" in lines
+    assert captured["finished"] == "stopped"
+
+
+# ----------------------------------------------------------- heater health
+
+def test_describe_heater_health_known_values():
+    from pyrava import describe_heater_health
+
+    assert describe_heater_health(0) == "OK"
+    assert describe_heater_health(1) == "Fault"
+
+
+def test_describe_heater_health_unknown_and_missing():
+    """A fault code we haven't seen yet should still read sensibly."""
+    from pyrava import describe_heater_health
+
+    assert describe_heater_health(2) == "Fault (code 2)"
+    assert describe_heater_health(None) == "unknown"
+    assert describe_heater_health("garbage") == "Fault (code garbage)"
+
+
+def test_heater_health_enum_matches_observed_mapping():
+    from pyrava import HeaterHealth
+
+    assert HeaterHealth.OK == 0
+    assert HeaterHealth.FAULT == 1
+    assert str(HeaterHealth.OK) == "OK"
+    assert str(HeaterHealth.FAULT) == "Fault"
+
+
+def _heater_device(health_raw):
+    class Fake:
+        def send(self, headers, body):
+            return (
+                "<<abc123456789=&200>=&{{{<body-handler=&HTIFO>},"
+                f"<HTCT=!6930><HTST=!7000><HTHH=!{health_raw}>"
+                "}}>"
+            )
+        def close(self):
+            pass
+
+    return BaravaDevice("192.0.2.10", transport=Fake())
+
+
+def test_device_heater_status_ok():
+    device = _heater_device(0)
+    assert device.heater_status() == "OK"
+    assert device.is_heater_ok() is True
+
+
+def test_device_heater_status_fault():
+    device = _heater_device(1)
+    assert device.heater_status() == "Fault"
+    assert device.is_heater_ok() is False
+
+
+def test_device_heater_status_missing_field():
+    class Fake:
+        def send(self, headers, body):
+            return "<<abc123456789=&200>=&{{{<body-handler=&HTIFO>},<HTCT=!6930>}}>"
+        def close(self):
+            pass
+
+    device = BaravaDevice("192.0.2.10", transport=Fake())
+    assert device.heater_status() == "unknown"
+    assert device.is_heater_ok() is None
+
+
+def test_cli_heater_status_line(capsys):
+    import argparse
+
+    from pyrava import __main__ as cli
+
+    device = _heater_device(1)
+    original = cli._connect
+    cli._connect = lambda args: device
+    try:
+        args = argparse.Namespace(
+            host="192.0.2.10", port=8080, timeout=5.0, json=False
+        )
+        cli.cmd_heater(args)
+    finally:
+        cli._connect = original
+    out = capsys.readouterr().out
+    assert "status   Fault" in out
+
+
+def test_cli_watch_shows_status_not_raw_code():
+    """The redrawn watch block should show 'status Fault', not 'health 1'."""
+    import argparse
+    import threading
+    import time
+
+    from pyrava import __main__ as cli
+
+    info = "<DVNM=&Lamp><DVVR=&1.0.1>"
+    heat = "<HTCT=!6930><HTST=!7000><HTHH=!1>"
+
+    class Fake:
+        def __init__(self):
+            self.queue = []
+
+        def send(self, headers, body):
+            flush, self.queue = self.queue, []
+            if headers.get("body-handler") == "DVIFO" or "DVIFO" in body:
+                self.queue.append("{{<body-handler=&DVIFO>}," + info + "}")
+            if headers.get("body-handler") == "HTIFO" or "HTIFO" in body:
+                self.queue.append("{{<body-handler=&HTIFO>}," + heat + "}")
+            if not flush:
+                return ""
+            return f"<<68b6b33d3b38=&200>=&{{{','.join(flush)}}}>"
+
+        def close(self):
+            pass
+
+    device = BaravaDevice("192.0.2.10", transport=Fake())
+    device.register()
+
+    captured = {}
+    original_connect = cli._connect
+    original_redraw = cli._Redraw
+    cli._connect = lambda args: device
+
+    class _Capture:
+        def __init__(self, ansi=None):
+            pass
+
+        def render(self, lines):
+            captured["lines"] = lines
+
+        def finish(self, message):
+            captured["finished"] = message
+
+    cli._Redraw = _Capture
+    try:
+        args = argparse.Namespace(
+            host="192.0.2.10", port=8080, timeout=5.0, json=False, interval=0.02
+        )
+
+        def stop_soon():
+            time.sleep(0.15)
+            import _thread
+            _thread.interrupt_main()
+
+        threading.Thread(target=stop_soon, daemon=True).start()
+        try:
+            cli.cmd_watch(args)
+        except KeyboardInterrupt:
+            pass
+    finally:
+        cli._connect = original_connect
+        cli._Redraw = original_redraw
+
+    lines = "\n".join(captured["lines"])
+    assert "status Fault" in lines
+    assert "health 1" not in lines
+
+
+# ------------------------------------------------------- fill hue / colour
+
+def test_rgb_to_hue_matches_textbook_primaries():
+    from pyrava import rgb_to_hue
+
+    assert rgb_to_hue(255, 0, 0) == pytest.approx(0, abs=0.5)
+    assert rgb_to_hue(0, 255, 0) == pytest.approx(120, abs=0.5)
+    assert rgb_to_hue(0, 0, 255) == pytest.approx(240, abs=0.5)
+    assert rgb_to_hue(255, 255, 0) == pytest.approx(60, abs=0.5)
+
+
+def test_rgb_to_hue_rejects_out_of_range_channels():
+    from pyrava import rgb_to_hue
+
+    with pytest.raises(ValueError):
+        rgb_to_hue(256, 0, 0)
+    with pytest.raises(ValueError):
+        rgb_to_hue(0, -1, 0)
+
+
+def test_rgb_no_longer_used_for_fill_still_works_standalone():
+    """rgb() itself is unchanged -- it's just not what set_fill_color uses."""
+    from pyrava import rgb
+
+    assert rgb(255, 0, 0) == 0xFF0000
+
+
+def test_set_fill_hue_sends_raw_value_and_validates_range():
+    device, fake = _device()
+    device.set_fill_hue(255)
+    assert fake.log[-1][1] == "<FCLR=!255>"
+
+    with pytest.raises(ValueError, match="0-360"):
+        device.set_fill_hue(511)
+    with pytest.raises(ValueError, match="0-360"):
+        device.set_fill_hue(-1)
+
+
+def test_set_fill_color_tuple_sends_hue_not_packed_rgb():
+    """The original bug: (0,0,255) used to pack to 255 and read as a hue by
+    accident, or (0,80,255) packed to 20735 and got rejected by the device.
+    Now it should send an actual computed hue for the requested colour."""
+    device, fake = _device()
+
+    device.set_fill_color((0, 0, 255))  # pure blue
+    sent = fake.log[-1][1]
+    assert sent == "<FCLR=!240>"  # blue's textbook hue
+
+    device.set_fill_color((255, 0, 0))  # pure red
+    assert fake.log[-1][1] == "<FCLR=!0>"
+
+
+def test_set_fill_color_bare_number_is_raw_hue():
+    device, fake = _device()
+    device.set_fill_color(180)
+    assert fake.log[-1][1] == "<FCLR=!180>"
+
+
+def test_cli_fill_hue_argument_bypasses_conversion():
+    import argparse
+
+    from pyrava import __main__ as cli
+
+    device, fake = _device()
+    original = cli._connect
+    cli._connect = lambda args: device
+    try:
+        args = argparse.Namespace(
+            host="x", port=8080, timeout=5.0, json=False,
+            power=None, desk=None, heater=None,
+            fill_color=None, fill_hue=270.0,
+            fill_brightness=None, desk_brightness=None, desk_temp=None,
+        )
+        cli.cmd_set(args)
+    finally:
+        cli._connect = original
+    assert fake.log[-1][1] == "<FCLR=!270>"
+
+
+def test_cli_fill_color_argument_converts_rgb_to_hue():
+    import argparse
+
+    from pyrava import __main__ as cli
+
+    device, fake = _device()
+    original = cli._connect
+    cli._connect = lambda args: device
+    try:
+        args = argparse.Namespace(
+            host="x", port=8080, timeout=5.0, json=False,
+            power=None, desk=None, heater=None,
+            fill_color="0,0,255", fill_hue=None,
+            fill_brightness=None, desk_brightness=None, desk_temp=None,
+        )
+        cli.cmd_set(args)
+    finally:
+        cli._connect = original
+    assert fake.log[-1][1] == "<FCLR=!240>"
