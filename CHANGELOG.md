@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+Aligns the client with the vendor's `barava_network_impl.md`, which describes
+a cyclical keepalive interface rather than the request/response model the
+original `network.md` implied.
+
+### Fixed
+
+- **Polling was 2.5x faster than the vendor allows.** The notes set a hard
+  500ms floor "for maximum network and device stability", but firmware 1.0.1
+  advertises 200ms in its key block and `follow_device_interval` adopted that
+  verbatim. The advertised value is still recorded as
+  `reported_ping_interval`, but the value actually used is clamped to
+  `MIN_PING_INTERVAL_MS`, with a one-time warning. `poll(interval=...)` is
+  clamped too (`enforce_interval_floor=False` opts out, for mocks).
+- `DEFAULT_PING_INTERVAL_MS` is now 1000 (was 2000); the notes recommend
+  800-1000ms for general use. `MAX_POLL_DELAY` raised from 250ms to 500ms for
+  the same reason.
+- Transport access is serialised behind a lock. A running `PollingSession`
+  pings on a background thread, so a direct setter call from your own thread
+  could previously interleave two exchanges on one session.
+
+### Added
+
+- `enqueue(..., urgent=True)` implements the notes' two-tier response
+  priority: passive commands ride the next keepalive, urgent ones are merged
+  into the queued packet and force it out immediately. `PollingSession.stop()`
+  is now prompt regardless of interval as a side effect.
+- Handler callbacks may return a `SubPacket` (or an iterable of them) to be
+  queued as a response, matching the mirrored-callback design. Returning
+  `None` stays the no-reply default.
+
 ## 0.1.5 (unreleased)
 
 ### Fixed (breaking)

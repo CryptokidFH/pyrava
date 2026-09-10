@@ -415,7 +415,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_raw)
 
     p = sub.add_parser("watch", parents=[common], help="stream queued events")
-    p.add_argument("--interval", type=float, default=0.5)
+    p.add_argument(
+        "--interval", type=float, default=1.0, metavar="SECONDS",
+        help="poll cadence; clamped to a 0.5s floor per the vendor's design "
+             "notes (0.5 is allowed for data polling like temperature)",
+    )
     p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("doctor", help="diagnose mDNS discovery")

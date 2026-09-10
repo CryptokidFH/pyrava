@@ -369,7 +369,7 @@ def test_session_id_travels_as_device_id_header():
     device.ping()
     headers = fake.log[0][2]
     assert headers["device-id"] == "~A1B2C3D4E5F6"
-    assert headers["ping-interval"] == "2000"
+    assert headers["ping-interval"] == "1000"  # documented default
     assert "body-handler" not in headers
 
 
@@ -527,11 +527,13 @@ def test_device_id_comes_from_the_key_block_not_dvid():
 
 
 def test_reported_interval_is_adopted():
+    """The device advertises 200ms, below the vendor's 500ms floor, so we
+    record what it said but don't actually ping that fast."""
     fake = _Replay()
     device = BaravaDevice("192.0.2.10", transport=fake, ping_interval=2000)
     device.get_device_info()
     assert device.reported_ping_interval == 200
-    assert device.ping_interval == 200
+    assert device.ping_interval == 500  # clamped to MIN_PING_INTERVAL_MS
 
     fake2 = _Replay()
     pinned = BaravaDevice(
@@ -541,6 +543,16 @@ def test_reported_interval_is_adopted():
     pinned.get_device_info()
     assert pinned.reported_ping_interval == 200
     assert pinned.ping_interval == 2000
+
+
+def test_above_floor_interval_is_adopted_verbatim():
+    """A device-advertised value at or above the floor is used as-is."""
+    raw = CAPTURED.replace("<68b6b33d3b38=&200>", "<68b6b33d3b38=&800>")
+    fake = _Replay(raw)
+    device = BaravaDevice("192.0.2.10", transport=fake, ping_interval=2000)
+    device.get_device_info()
+    assert device.reported_ping_interval == 800
+    assert device.ping_interval == 800
 
 
 def test_group_blocks_decode_to_a_mapping():
@@ -563,7 +575,9 @@ def test_outbound_batch_matches_the_device_dialect():
     device.register()
     device.send_batch([SubPacket("DSKST", {"DSTT": 1})])
     body = fake.sent[-1][1]
-    assert body.startswith("<<68b6b33d3b38=&200>=&{")
+    # register() absorbed the device's advertised 200ms and clamped it to
+    # the 500ms floor, so that is what goes back out in the key block.
+    assert body.startswith("<<68b6b33d3b38=&500>=&{")
     assert fake.sent[-1][0]["batched-packet"] == ""
     # the session ID still identifies us in the HTTP header
     assert fake.sent[-1][0]["device-id"] == "~A1B2C3D4E5F6"
@@ -700,7 +714,7 @@ def test_bare_ping_keepalive_never_triggers_callbacks():
     fake = _DeferredEventDevice()
     device = BaravaDevice("192.0.2.1", transport=fake)
     seen = []
-    session = device.poll(interval=0.03)  # keepalive=None, the old default
+    session = device.poll(interval=0.03, enforce_interval_floor=False)
     session.on(Handler.DEVICE_INFO, lambda p: seen.append(p.body))
     time.sleep(0.15)
     session.stop()
@@ -716,7 +730,8 @@ def test_keepalive_list_produces_continuous_callbacks():
     device.device_id = "68b6b33d3b38"  # normally set by register()
     seen = []
     session = device.poll(
-        interval=0.03, keepalive=[Handler.DEVICE_INFO, Handler.GET_HEATER_INFO]
+        interval=0.03, keepalive=[Handler.DEVICE_INFO, Handler.GET_HEATER_INFO],
+        enforce_interval_floor=False,
     )
     session.on(Handler.DEVICE_INFO, lambda p: seen.append(("info", p.body)))
     session.on(Handler.GET_HEATER_INFO, lambda p: seen.append(("heat", p.body)))
@@ -734,7 +749,8 @@ def test_keepalive_single_handler_still_works():
     fake = _DeferredEventDevice()
     device = BaravaDevice("192.0.2.1", transport=fake)
     seen = []
-    session = device.poll(interval=0.03, keepalive=Handler.GET_HEATER_INFO)
+    session = device.poll(interval=0.03, keepalive=Handler.GET_HEATER_INFO,
+                          enforce_interval_floor=False)
     session.on(Handler.GET_HEATER_INFO, lambda p: seen.append(p.body))
     time.sleep(0.15)
     session.stop()
@@ -781,10 +797,11 @@ def test_redraw_ansi_path_moves_cursor_and_clears_lines(capsys):
     assert "\x1b[2K" in out  # clears each line before rewriting
 
 
-def test_watch_command_populates_status_from_deferred_replies():
+def test_watch_command_populates_status_from_deferred_replies(monkeypatch):
     """Same fixture shape as the earlier keepalive tests; checks cmd_watch's
     own callbacks build the right summary strings, not just that *a*
     callback fires."""
+    monkeypatch.setattr("pyrava.client.MIN_PING_INTERVAL_MS", 10)
     import argparse
     import threading
     import time
@@ -947,8 +964,9 @@ def test_cli_heater_status_line(capsys):
     assert "status   Fault" in out
 
 
-def test_cli_watch_shows_status_not_raw_code():
+def test_cli_watch_shows_status_not_raw_code(monkeypatch):
     """The redrawn watch block should show 'status Fault', not 'health 1'."""
+    monkeypatch.setattr("pyrava.client.MIN_PING_INTERVAL_MS", 10)
     import argparse
     import threading
     import time
@@ -1116,3 +1134,169 @@ def test_cli_fill_color_argument_converts_rgb_to_hue():
     finally:
         cli._connect = original
     assert fake.log[-1][1] == "<FCLR=!240>"
+
+
+# ------------------------------- vendor design notes: cyclical interface
+
+def test_interval_floor_constants_match_the_design_notes():
+    from pyrava.client import (
+        DATA_POLL_INTERVAL_MS,
+        DEFAULT_PING_INTERVAL_MS,
+        MIN_PING_INTERVAL_MS,
+    )
+
+    # "no less than 500MS for maximum network and device stability"
+    assert MIN_PING_INTERVAL_MS == 500
+    # "otherwise it should be kept anywhere from 800-1000ms delay"
+    assert 800 <= DEFAULT_PING_INTERVAL_MS <= 1000
+    # "For data polling I.E heater temperature, it is acceptable to reach
+    # this 500MS keepalive threshold"
+    assert DATA_POLL_INTERVAL_MS == MIN_PING_INTERVAL_MS
+
+
+def test_poll_clamps_below_floor_intervals():
+    fake = _Replay()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    session = device.poll(interval=0.05)
+    try:
+        assert session.interval == 0.5
+    finally:
+        session.stop()
+
+
+def test_poll_floor_can_be_waived_for_mocks():
+    fake = _Replay()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    session = device.poll(interval=0.05, enforce_interval_floor=False)
+    try:
+        assert session.interval == 0.05
+    finally:
+        session.stop()
+
+
+def test_urgent_enqueue_flushes_before_the_next_interval():
+    """Passive commands wait for the tick; urgent ones force it early."""
+    import time
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)
+    device.device_id = "68b6b33d3b38"
+    # A long interval, so anything arriving quickly must have been forced.
+    session = device.poll(interval=5.0, enforce_interval_floor=False)
+    try:
+        time.sleep(0.1)
+        calls_before = len(fake.calls)
+        session.enqueue(Handler.SET_FILL_COLOR, {"FCLR": 240}, urgent=True)
+        time.sleep(0.2)  # far less than the 5s interval
+        assert len(fake.calls) > calls_before
+        assert "FCLR" in fake.calls[-1]
+    finally:
+        session.stop()
+
+
+def test_passive_enqueue_waits_for_the_tick():
+    import time
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)
+    device.device_id = "68b6b33d3b38"
+    session = device.poll(interval=5.0, enforce_interval_floor=False)
+    try:
+        time.sleep(0.1)
+        calls_before = len(fake.calls)
+        session.enqueue(Handler.SET_FILL_COLOR, {"FCLR": 240})  # passive
+        time.sleep(0.2)
+        assert len(fake.calls) == calls_before  # still waiting for the tick
+    finally:
+        session.stop()
+
+
+def test_callback_return_value_is_queued_as_a_response():
+    """The design notes say handler callbacks should produce a response."""
+    import time
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)
+    device.device_id = "68b6b33d3b38"
+    session = device.poll(
+        interval=0.03, keepalive=Handler.GET_HEATER_INFO,
+        enforce_interval_floor=False,
+    )
+    try:
+        session.on(
+            Handler.GET_HEATER_INFO,
+            lambda p: SubPacket("DVIFO", {}),  # reply to every heater packet
+        )
+        time.sleep(0.25)
+    finally:
+        session.stop()
+    assert any("DVIFO" in body for body in fake.calls)
+
+
+def test_callback_returning_none_queues_nothing():
+    import time
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)
+    device.device_id = "68b6b33d3b38"
+    session = device.poll(
+        interval=0.03, keepalive=Handler.GET_HEATER_INFO,
+        enforce_interval_floor=False,
+    )
+    try:
+        session.on(Handler.GET_HEATER_INFO, lambda p: None)
+        time.sleep(0.15)
+    finally:
+        session.stop()
+    # Only the keepalive handler should ever appear, never a batch.
+    assert not any("DVIFO" in body for body in fake.calls)
+
+
+def test_stop_is_prompt_even_with_a_long_interval():
+    """stop() wakes the interval wait rather than blocking for a full tick."""
+    import time
+
+    fake = _DeferredEventDevice()
+    device = BaravaDevice("192.0.2.1", transport=fake)
+    session = device.poll(interval=30.0, enforce_interval_floor=False)
+    time.sleep(0.05)
+    started = time.monotonic()
+    session.stop()
+    assert time.monotonic() - started < 2.0
+
+
+def test_direct_calls_do_not_race_the_poll_thread():
+    """A session pings on a background thread while your code calls setters;
+    both go through one transport, so they must be serialised."""
+    import threading
+    import time
+
+    overlaps = []
+    guard = threading.Lock()
+    in_flight = [0]
+
+    class SlowTransport:
+        def send(self, headers, body):
+            with guard:
+                in_flight[0] += 1
+                if in_flight[0] > 1:
+                    overlaps.append(True)
+            time.sleep(0.005)  # widen the race window
+            with guard:
+                in_flight[0] -= 1
+            return "<<abc123456789=&500>=&{{{<body-handler=&HTIFO>},<HTCT=!6930>}}>"
+
+        def close(self):
+            pass
+
+    device = BaravaDevice("192.0.2.1", transport=SlowTransport())
+    device.device_id = "abc123456789"
+    session = device.poll(interval=0.01, enforce_interval_floor=False)
+    try:
+        for _ in range(15):
+            device.set_fill_hue(200)
+            time.sleep(0.003)
+    finally:
+        session.stop()
+
+    assert not overlaps

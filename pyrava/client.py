@@ -44,11 +44,24 @@ __all__ = [
 
 log = logging.getLogger("pyrava")
 
-DEFAULT_PING_INTERVAL_MS = 2000
+#: Interval sent in our ping-interval header, and the default poll cadence.
+#: `barava_network_impl.md` recommends 800-1000ms for general use.
+DEFAULT_PING_INTERVAL_MS = 1000
 
-#: Longest gap between queue-pop pings while waiting on a reply. Keeps a
-#: synchronous call responsive even at a long ping interval.
-MAX_POLL_DELAY = 0.25
+#: Hard floor from `barava_network_impl.md`: "The keepalive interval should be
+#: no less than 500MS for maximum network and device stability." The device
+#: itself advertises 200 in its response key block, which is below this; we
+#: don't adopt a value under the floor.
+MIN_PING_INTERVAL_MS = 500
+
+#: The floor is explicitly allowed for data polling (e.g. heater temperature);
+#: anything else should sit at DEFAULT_PING_INTERVAL_MS.
+DATA_POLL_INTERVAL_MS = 500
+
+#: Longest gap between queue-pop pings while waiting on a reply. Bounded
+#: below by the 500ms floor rather than the old 250ms, which was pinging the
+#: device twice as fast as `barava_network_impl.md` allows.
+MAX_POLL_DELAY = MIN_PING_INTERVAL_MS / 1000.0
 
 #: Heater temperatures arrive as hundredths of a degree Fahrenheit
 #: (6930 -> 69.30 F). Confirmed against hardware -- an earlier version
@@ -155,12 +168,17 @@ class BaravaDevice:
         self.reported_ping_interval: int | None = None
         self.follow_device_interval = follow_device_interval
         self._warned_unregistered_batch = False
+        self._warned_low_interval = False
         self.privilege: Privilege | int | None = None
         self.last_info: dict[str, Any] = {}
         #: Raw text of the most recent response, kept for debugging.
         self.last_raw: str = ""
         #: ``(headers, body)`` of the most recent request.
         self.last_request: tuple[dict[str, str], str] | None = None
+        #: Serialises transport access. A PollingSession runs its cycle on a
+        #: background thread, so a direct setter called from your own thread
+        #: would otherwise interleave two exchanges on one session.
+        self._io_lock = threading.RLock()
 
     # -- construction helpers ---------------------------------------------
 
@@ -225,13 +243,14 @@ class BaravaDevice:
             payload = ""
         if extra_headers:
             headers.update({str(k): str(v) for k, v in extra_headers.items()})
-        log.debug("-> %s %s", headers, payload or "(empty)")
-        raw = self.transport.send(headers, payload)
-        log.debug("<- %s", raw)
-        self.last_request = (headers, payload)
-        self.last_raw = raw
-        batch = parse_response(raw)
-        self._absorb(batch)
+        with self._io_lock:
+            log.debug("-> %s %s", headers, payload or "(empty)")
+            raw = self.transport.send(headers, payload)
+            log.debug("<- %s", raw)
+            self.last_request = (headers, payload)
+            self.last_raw = raw
+            batch = parse_response(raw)
+            self._absorb(batch)
         return batch
 
     def _absorb(self, batch: Batch) -> None:
@@ -246,7 +265,25 @@ class BaravaDevice:
         if batch.ping_interval:
             self.reported_ping_interval = batch.ping_interval
             if self.follow_device_interval:
-                self.ping_interval = batch.ping_interval
+                # Firmware 1.0.1 advertises 200ms, below the 500ms floor in
+                # `barava_network_impl.md`. Following it verbatim would ping
+                # 2.5x faster than the vendor says is safe for device
+                # stability, so the floor wins.
+                if batch.ping_interval < MIN_PING_INTERVAL_MS:
+                    if not self._warned_low_interval:
+                        log.warning(
+                            "device advertises a %dms ping interval, below the "
+                            "%dms minimum in the vendor's design notes; using "
+                            "%dms instead. Pass follow_device_interval=False "
+                            "to pin your own value.",
+                            batch.ping_interval,
+                            MIN_PING_INTERVAL_MS,
+                            MIN_PING_INTERVAL_MS,
+                        )
+                        self._warned_low_interval = True
+                    self.ping_interval = MIN_PING_INTERVAL_MS
+                else:
+                    self.ping_interval = batch.ping_interval
 
     def ping(self) -> Batch:
         """Pop the response queue without issuing a command."""
@@ -648,13 +685,19 @@ class BaravaDevice:
         interval: float | None = None,
         keepalive: Handler | str | Sequence[Handler | str] | None = None,
         on_error: Callable[[Exception], None] | None = None,
+        enforce_interval_floor: bool = True,
     ) -> "PollingSession":
         """Start a background ping loop.
 
-        The device only speaks when spoken to: it holds your responses in a
-        queue and flushes them, batched, on your next ping. Missing your own
-        ping interval gets you unregistered, so keep this running for as long
-        as you want to receive events.
+        This is the intended primary mode of communication. The vendor's
+        design notes describe a cyclical interface where the keepalive loop
+        carries both device state updates and your commands, rather than
+        one-off requests: use :meth:`PollingSession.enqueue` to send commands
+        along the cycle instead of firing separate exchanges.
+
+        The device holds your responses in a queue and flushes them, batched,
+        on your next ping. Missing your own ping interval gets you
+        unregistered, so keep this running for as long as you want events.
 
         ``keepalive`` controls what goes out each tick when nothing else is
         queued:
@@ -670,10 +713,24 @@ class BaravaDevice:
 
         Because replies are deferred by one ping, a handler passed here
         starts appearing in callbacks on the *second* tick, not the first.
+
+        ``interval`` is clamped to :data:`MIN_PING_INTERVAL_MS` (500ms), the
+        floor the vendor gives for device stability; 500ms is explicitly
+        allowed for data polling like heater temperature, and
+        :data:`DEFAULT_PING_INTERVAL_MS` (1000ms) suits everything else. Pass
+        ``enforce_interval_floor=False`` only for tests against a mock.
         """
+        chosen = interval if interval is not None else self.ping_interval / 1000.0
+        floor = MIN_PING_INTERVAL_MS / 1000.0
+        if enforce_interval_floor and chosen < floor:
+            log.warning(
+                "poll interval %.3fs is below the %.3fs minimum in the "
+                "vendor's design notes; using %.3fs.", chosen, floor, floor
+            )
+            chosen = floor
         session = PollingSession(
             self,
-            interval=interval if interval is not None else self.ping_interval / 1000.0,
+            interval=chosen,
             keepalive=keepalive,
             on_packet=on_packet,
             on_error=on_error,
@@ -703,6 +760,9 @@ class PollingSession:
         self._queue: list[SubPacket] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        #: Set to cut the current inter-tick wait short, so an urgent command
+        #: goes out immediately instead of waiting for the next interval.
+        self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_batch: Batch | None = None
 
@@ -717,13 +777,32 @@ class PollingSession:
         return self
 
     def enqueue(
-        self, handler: Handler | str, body: Mapping[str, Any] | None = None
+        self,
+        handler: Handler | str,
+        body: Mapping[str, Any] | None = None,
+        *,
+        urgent: bool = False,
     ) -> None:
-        """Queue a command to go out on the next ping."""
+        """Queue a command to ride out on the keepalive cycle.
+
+        The vendor's design notes split responses by importance. A passive
+        one is appended to the keepalive packet and goes out on the next
+        tick, never interrupting the device. An important one -- their
+        examples are device colour and privilege -- is appended to the
+        queued keepalive packet *and* triggers an interrupt that forces it
+        out immediately.
+
+        ``urgent=True`` is that second case: the command joins whatever is
+        already queued and the tick fires now rather than at the next
+        interval, so it still goes out as one merged packet rather than a
+        separate exchange racing the loop.
+        """
         with self._lock:
             self._queue.append(
                 SubPacket(str(getattr(handler, "value", handler)), dict(body or {}))
             )
+        if urgent:
+            self._wake.set()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -738,6 +817,7 @@ class PollingSession:
 
     def stop(self, timeout: float = 2.0) -> None:
         self._stop.set()
+        self._wake.set()  # cut any in-progress interval wait short
         if self._thread:
             self._thread.join(timeout)
             self._thread = None
@@ -778,14 +858,43 @@ class PollingSession:
                 if self.on_error:
                     self.on_error(exc)
             elapsed = time.monotonic() - started
-            self._stop.wait(max(0.0, self.interval - elapsed))
+            if self._stop.is_set():
+                break
+            # Wait on _wake rather than _stop so an urgent enqueue can cut the
+            # interval short; stop() sets both, so shutdown is still prompt.
+            self._wake.wait(max(0.0, self.interval - elapsed))
+            self._wake.clear()
 
     def _dispatch(self, batch: Batch) -> None:
+        """Route each packet to its callbacks, queueing any response they give.
+
+        The vendor's design describes mirrored routing on both ends, where a
+        handler callback "should always produce a client response". A
+        callback here may return ``None`` (no reply, the common case), a
+        single :class:`SubPacket`, or an iterable of them; anything returned
+        is queued to ride out on the next cycle.
+        """
         for packet in batch:
             if self.on_packet:
-                self.on_packet(packet)
+                self._queue_reply(self.on_packet(packet))
             for callback in self._handlers.get(packet.handler or "", []):
-                callback(packet)
+                self._queue_reply(callback(packet))
+
+    def _queue_reply(self, reply: Any) -> None:
+        if reply is None:
+            return
+        replies = [reply] if isinstance(reply, SubPacket) else list(reply)
+        if not replies:
+            return
+        with self._lock:
+            for item in replies:
+                if not isinstance(item, SubPacket):
+                    log.warning(
+                        "handler callback returned %r, expected SubPacket or "
+                        "None; ignoring", type(item).__name__
+                    )
+                    continue
+                self._queue.append(item)
 
 
 # --------------------------------------------------------------------------

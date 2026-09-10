@@ -3,8 +3,6 @@
 A Python client for Barava smart devices, built from the vendor's `network.md`
 and `animation.md`, then corrected against firmware 1.0.1 on real hardware.
 
-Massive special thanks to Ian Betz for providing those specs.
-
 ```bash
 pip install pyrava              # core client, zero dependencies
 pip install "pyrava[all]"       # + mDNS discovery and faster HTTP
@@ -223,6 +221,45 @@ Revision 1 has 5 zones, so 5 threads maximum, and the engine targets 41 Hz.
 
 Transforms are destructive: applying the inverse will not restore a buffer.
 
+## The cyclical model
+
+The vendor's design notes (`barava_network_impl.md`) describe the interface as
+a **cycle**, not a request/response API: a keepalive loop runs continuously in
+both directions, device state updates ride on it, and your commands are
+appended to the pending keepalive packet rather than sent as separate
+exchanges. `poll()` is that cycle, and it's the intended primary mode:
+
+```python
+session = light.poll(keepalive=[Handler.DEVICE_INFO, Handler.GET_HEATER_INFO])
+session.on(Handler.GET_HEATER_INFO, update_my_ui)
+session.enqueue(Handler.SET_FILL_COLOR, {Var.FILL_COLOR: 240}, urgent=True)
+```
+
+Commands come in two priorities, matching the notes:
+
+| | Goes out | Use for |
+| --- | --- | --- |
+| `enqueue(...)` | next tick, merged into the keepalive | passive updates |
+| `enqueue(..., urgent=True)` | immediately, still merged | colour, privilege, anything user-visible |
+
+One-shot calls like `light.set_fill_hue(240)` still work and are fine for
+scripts. When a session is running they're serialised against it, so they
+won't interleave — but they are a separate exchange rather than a merged one,
+so prefer `enqueue(urgent=True)` inside a running cycle.
+
+### Timing
+
+The notes give a hard floor of **500ms** between keepalives "for maximum
+network and device stability", with 800–1000ms preferred and 500ms reserved
+for data polling like heater temperature. `pyrava` enforces that:
+
+* `DEFAULT_PING_INTERVAL_MS` is 1000.
+* `poll(interval=...)` is clamped to 500ms, with a warning.
+* Firmware 1.0.1 advertises **200ms** in its response key block, below the
+  floor. `follow_device_interval` records it as `reported_ping_interval` but
+  clamps the value actually used, rather than pinging 2.5x faster than the
+  vendor says is safe.
+
 ## Receiving events
 
 ```python
@@ -250,6 +287,14 @@ showing up in callbacks on the *second* tick, not the first.
 Queued commands (`session.enqueue(...)`) ride out on the next tick alongside
 any keepalive handlers, and everything the device returns is dispatched by
 handler.
+
+Callbacks may return a reply, which the notes describe as the normal shape of
+a mirrored handler ("callbacks ... should always produce a client response").
+Return `None` for no reply, or a `SubPacket` (or several) to queue one:
+
+```python
+session.on(Handler.DEVICE_INFO, lambda p: SubPacket(Handler.GET_HEATER_INFO, {}))
+```
 
 ## Privilege
 
