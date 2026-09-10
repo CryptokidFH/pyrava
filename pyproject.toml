@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrava"
+description = "Python client for Barava smart devices over the LAN protocol"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Calvin Moras" }]
+keywords = ["barava", "smart-home", "iot", "mdns", "zeroconf", "esp32", "led"]
+dynamic = ["version"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Topic :: System :: Networking",
+    "Typing :: Typed",
+]
+
+# The core client speaks HTTP through the standard library, so a plain
+# install pulls in no third-party dependencies at all.
+dependencies = []
+
+[project.optional-dependencies]
+# mDNS discovery. Not needed if you connect by IP.
+discovery = ["zeroconf>=0.100"]
+# Connection reuse; measurably lower latency at short ping intervals.
+fast = ["requests>=2.25"]
+all = ["zeroconf>=0.100", "requests>=2.25"]
+dev = [
+    "zeroconf>=0.100",
+    "requests>=2.25",
+    "pytest>=7",
+    "build>=1.0",
+    "twine>=4.0",
+]
+
+[project.scripts]
+pyrava = "pyrava.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/CryptokidFH/pyrava"
+Repository = "https://github.com/CryptokidFH/pyrava"
+Issues = "https://github.com/CryptokidFH/pyrava/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "pyrava.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["pyrava*"]
+
+[tool.setuptools.package-data]
+pyrava = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
