@@ -13,8 +13,8 @@ pulls in nothing. Two optional extras:
 
 | Extra | Brings | Needed for |
 | --- | --- | --- |
-| `discovery` | `zeroconf` | `discover_devices()`; not needed if you connect by IP |
-| `fast` | `requests` | connection reuse, lower latency at short ping intervals |
+| `zeroconf` | `discovery` | `discover_devices()`; not needed if you connect by IP |
+| `requests` | `fast` | connection reuse, lower latency at short ping intervals |
 
 Requires Python 3.8+.
 
