@@ -34,13 +34,23 @@ def main():
     parser.add_argument("--smooth", action="store_true")
     parser.add_argument("--punch", action="store_true",
                         help="boost saturation so muted colours read vividly")
+    parser.add_argument("--max-brightness", action="store_true",
+                        help="pin brightness to 1, matching how your other "
+                             "lights' pipeline normalises colours")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     hsv_colors = get_dominant_colors(n_colors=args.n)
     rgb_colors = [hsv_to_rgb255(h, s, v) for (h, s, v) in hsv_colors]
-    if args.punch:
-        rgb_colors = [punch_color(c) for c in rgb_colors]
+    if args.punch or args.max_brightness:
+        rgb_colors = [
+            punch_color(
+                c,
+                saturation=1.5 if args.punch else 1.0,
+                value=1.0 if args.max_brightness else None,
+            )
+            for c in rgb_colors
+        ]
     print("RGB:", rgb_colors)
     print("stops:", generate_gradient_stops(rgb_colors))
 

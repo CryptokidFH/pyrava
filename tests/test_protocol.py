@@ -1708,3 +1708,43 @@ def test_dim_saturated_colors_survive_the_round_trip():
     lines = "\n".join(disassemble(payload))
     assert "BUILD_GRADIENT(pos=0, r=7, g=0, b=63)" in lines
     assert "BUILD_GRADIENT(pos=170, r=0, g=4, b=54)" in lines
+
+
+def test_punch_color_value_pins_brightness():
+    """value= matches a pipeline that normalises brightness to 1, which is a
+    different effect from boosting saturation."""
+    import colorsys
+
+    from pyrava import punch_color
+
+    out = punch_color((68, 43, 43), value=1.0)
+    _, _, v = colorsys.rgb_to_hsv(*[c / 255 for c in out])
+    assert v == pytest.approx(1.0, abs=0.01)
+    assert max(out) == 255
+
+
+def test_punch_color_value_beats_min_value():
+    from pyrava import punch_color
+
+    # value= wins when both are supplied.
+    assert punch_color((10, 0, 0), value=1.0, min_value=0.2) == punch_color(
+        (10, 0, 0), value=1.0
+    )
+
+
+def test_punch_color_levers_are_independent():
+    """Saturation and brightness are separate axes; neither implies the other."""
+    import colorsys
+
+    from pyrava import punch_color
+
+    base = (68, 43, 43)
+    _, s0, v0 = colorsys.rgb_to_hsv(*[c / 255 for c in base])
+
+    sat_only = punch_color(base)
+    _, s1, v1 = colorsys.rgb_to_hsv(*[c / 255 for c in sat_only])
+    assert s1 > s0 and v1 == pytest.approx(v0, abs=0.01)
+
+    bright_only = punch_color(base, saturation=1.0, value=1.0)
+    _, s2, v2 = colorsys.rgb_to_hsv(*[c / 255 for c in bright_only])
+    assert s2 == pytest.approx(s0, abs=0.01) and v2 > v0

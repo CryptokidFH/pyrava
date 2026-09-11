@@ -294,8 +294,20 @@ device.set_gradient([punch_color(c) for c in colors])
 ```
 
 It deliberately does *not* raise brightness by default -- that would wash out
-the dim-but-saturated colours the device handles well. Pass
-`min_value=` if you do want a floor.
+the dim-but-saturated colours the device handles well.
+
+Saturation and brightness are separate levers and neither implies the other:
+
+| | effect | `(68, 43, 43)` becomes |
+| --- | --- | --- |
+| `punch_color(c)` | deeper, same brightness | `(68, 31, 31)` |
+| `punch_color(c, value=1.0)` | brighter *and* deeper | `(255, 114, 114)` |
+| `punch_color(c, saturation=1.0, value=1.0)` | brighter only | `(255, 161, 161)` |
+
+`value=1.0` is what a pipeline that normalises brightness to 1 does -- common
+when driving lights that handle brightness as a separate channel. It changes
+muted colours substantially rather than just deepening them, so it's opt-in.
+`min_value=` floors brightness instead of pinning it.
 
 ### Zone groups
 

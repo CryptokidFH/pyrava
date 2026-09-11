@@ -142,6 +142,7 @@ def punch_color(
     *,
     saturation: float = 1.5,
     min_value: float | None = None,
+    value: float | None = None,
 ) -> tuple[int, int, int]:
     """Boost an RGB colour's saturation, leaving hue and brightness alone.
 
@@ -153,14 +154,24 @@ def punch_color(
     sits at 0.37 saturation and similar brightness, and that is what looks
     pale.
 
-    So this multiplies saturation by ``saturation`` (capped at 1.0) and by
-    default touches nothing else. ``min_value`` optionally floors brightness
-    too, but it's off by default: raising it would brighten exactly the
-    dim-but-saturated colours the device handles well.
+    Three independent levers, all off unless asked for except saturation:
+
+    * ``saturation`` -- multiply saturation, capped at 1.0. Default 1.5.
+    * ``min_value`` -- floor brightness. Off by default: raising it would
+      brighten exactly the dim-but-saturated colours the device handles well.
+    * ``value`` -- pin brightness outright, e.g. ``value=1.0`` to max it.
+      This is a *different* effect from boosting saturation: it makes a
+      colour brighter, not deeper, and will visibly change muted colours
+      (``(68, 43, 43)`` becomes a bright pink). Useful if you're matching a
+      pipeline that already normalises brightness this way.
+
+    ``value`` takes precedence over ``min_value`` when both are given.
     """
     h, s, v = colorsys.rgb_to_hsv(*[c / 255 for c in rgb])
     s = min(1.0, s * saturation)
-    if min_value is not None:
+    if value is not None:
+        v = value
+    elif min_value is not None:
         v = max(min_value, v)
     r, g, b = colorsys.hsv_to_rgb(h, s, v)
     return (round(r * 255), round(g * 255), round(b * 255))

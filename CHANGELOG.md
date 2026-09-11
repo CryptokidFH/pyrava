@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.4 (unreleased)
+
+### Added
+
+- `punch_color(..., value=)` pins brightness outright, alongside the existing
+  saturation multiplier and optional `min_value=` floor. Matches pipelines
+  that normalise brightness to 1 before sending (common when driving lights
+  that treat brightness as a separate channel). The three levers are
+  independent: boosting saturation deepens a colour, pinning value brightens
+  it, and they compose.
+
 ## 0.4.3 (unreleased)
 
 ### Added
