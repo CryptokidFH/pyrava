@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+Decoded three `CMPAM`/`ANDT` theme payloads captured from the device's own
+app. All three now recompile byte-for-byte, which pins down several things
+`animation.md` got wrong or left vague.
+
+### Added
+
+- `set_zone_colors()`, `set_zone_gradient()`, `clear_zones()` and
+  `build_theme()` on `BaravaDevice`: per-zone RGB for the five addressable
+  LED zones. These take real RGB, unlike the single-hue `FCLR` path.
+- `ZONE_ORDER` = `(4, 2, 3, 0, 1)`, the order the app selects zones in a
+  theme header. Five zones confirmed, matching the hardware's top ring,
+  middle inner/outer and bottom inner/outer.
+- `examples/zone_probe.py` lights one zone at a time so the indices can be
+  mapped to physical rings.
+
+### Fixed (breaking, animation bytecode)
+
+- `FILL_ZONE` (0x11) takes **no** operands, not `(r, g, b)`. It opens a
+  gradient build. `fill_zone()` lost its parameters.
+- `BUILD_GRADIENT` (0x12) takes `(pos, r, g, b)` and is emitted once per
+  stop, rather than taking none. `build_gradient()` gained parameters.
+  `animation.md`'s worked example uses `APPEND_GRADIENT` (0x13) for this;
+  the hardware does not. `append_gradient()` is kept but its role is now
+  unconfirmed.
+- `compile()` no longer prefixes `SCRIPT_HEADER` (0x00); captured themes
+  start at `OPEN_HEADER`. Pass `script_header=True` for the old behaviour.
+- `gradient()` now emits `FILL_ZONE, BUILD_GRADIENT*, MAP_*`, matching the app.
+
 ## 0.2.0 (unreleased)
 
 Aligns the client with the vendor's `barava_network_impl.md`, which describes

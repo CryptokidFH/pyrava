@@ -63,6 +63,19 @@ DATA_POLL_INTERVAL_MS = 500
 #: device twice as fast as `barava_network_impl.md` allows.
 MAX_POLL_DELAY = MIN_PING_INTERVAL_MS / 1000.0
 
+#: Zone indices in the order the device's own app selects them in a theme
+#: header (``SELECT_ZONE 4, 2, 3, 0, 1``). Five zones, matching the hardware:
+#: a top ring, a middle inner and outer ring, and a bottom inner and outer.
+#:
+#: Which index is which ring is only partly pinned down. A captured theme
+#: described as setting "the first three zones" to red/green/blue set 4, 2
+#: and 3, so those are the first three in this order. A theme described as
+#: colouring "the bottom two zones" drove a gradient on zone 0. That leaves
+#: 0 and 1 as the bottom pair and 4/2/3 as the top and middle group, without
+#: fixing inner vs outer either way. ``examples/zone_probe.py`` lights one
+#: zone at a time so you can label them for your unit.
+ZONE_ORDER: tuple[int, ...] = (4, 2, 3, 0, 1)
+
 #: Heater temperatures arrive as hundredths of a degree Fahrenheit
 #: (6930 -> 69.30 F). Confirmed against hardware -- an earlier version
 #: of this library assumed Celsius and only relabeled the same number.
@@ -643,6 +656,80 @@ class BaravaDevice:
             {Var.ANIMATION_DATA.value: payload, Var.SPEC_ON.value: int(spectrum)},
             wait=False,
         )
+
+    # -- zones -------------------------------------------------------------
+
+    def build_theme(
+        self,
+        solids: Mapping[int, tuple[int, int, int]] | None = None,
+        gradients: Mapping[int, Sequence[tuple[int, int, int, int]]] | None = None,
+        *,
+        smooth: bool = False,
+        zones: Sequence[int] = ZONE_ORDER,
+    ) -> AnimationScript:
+        """Compose a static theme without sending it.
+
+        Reproduces the structure the device's own app emits: a header that
+        selects every zone, then one atomic scope holding a per-zone fill.
+        ``solids`` maps a zone to one ``(r, g, b)``; ``gradients`` maps a zone
+        to ``(pos, r, g, b)`` stops, where ``pos`` spans 0-255 across the
+        zone. A zone in neither mapping is left dark, which is how the app
+        writes an all-off theme.
+
+        Returns the script so you can inspect or extend it; pass it to
+        :meth:`upload_animation`, or use :meth:`set_zone_colors` to do both.
+        """
+        script = AnimationScript()
+        with script.header(0):
+            script.reset_l2()
+            for zone in zones:
+                script.select_zone(zone)
+        with script.thread(0):
+            with script.atomic():
+                for zone, stops in (gradients or {}).items():
+                    script.reset_l2()
+                    script.select_zone(zone)
+                    script.gradient(*stops, smooth=smooth)
+                for zone, (r, g, b) in (solids or {}).items():
+                    script.reset_l2()
+                    script.select_zone(zone)
+                    script.set_rgb(r, g, b)
+        return script
+
+    def set_zone_colors(
+        self,
+        solids: Mapping[int, tuple[int, int, int]] | None = None,
+        gradients: Mapping[int, Sequence[tuple[int, int, int, int]]] | None = None,
+        *,
+        smooth: bool = False,
+        zones: Sequence[int] = ZONE_ORDER,
+    ) -> Batch:
+        """Set each LED zone's colour in one upload.
+
+        ``light.set_zone_colors({4: (255, 0, 0), 2: (0, 255, 0)})`` lights
+        two zones and leaves the rest dark. Unlike ``set_fill_hue``, this
+        takes real RGB -- the zone path carries all three channels, so
+        saturation survives here.
+        """
+        return self.upload_animation(
+            self.build_theme(solids, gradients, smooth=smooth, zones=zones)
+        )
+
+    def set_zone_gradient(
+        self,
+        zone: int,
+        *stops: tuple[int, int, int, int],
+        smooth: bool = False,
+    ) -> Batch:
+        """Run a gradient across one zone, leaving the others dark.
+
+        ``light.set_zone_gradient(0, (0, 7, 0, 63), (255, 0, 4, 54))``
+        """
+        return self.set_zone_colors(gradients={zone: stops}, smooth=smooth)
+
+    def clear_zones(self, *, zones: Sequence[int] = ZONE_ORDER) -> Batch:
+        """Turn every addressable zone off, the way the app's blank theme does."""
+        return self.upload_animation(self.build_theme(zones=zones))
 
     # -- maintenance -------------------------------------------------------
 

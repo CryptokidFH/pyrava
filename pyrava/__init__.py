@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from .animation import Command, AnimationScript, disassemble
 from .client import (
+    ZONE_ORDER,
     BaravaDevice,
     PollingSession,
     describe_heater_health,
@@ -54,11 +55,12 @@ from .packet import (
 )
 from .transport import HttpTransport, Transport
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "__version__",
     # client
+    "ZONE_ORDER",
     "BaravaDevice",
     "PollingSession",
     "describe_heater_health",

@@ -177,15 +177,20 @@ def test_rgb_packing():
 # ---------------------------------------------------------------- animation
 
 def test_gradient_rotate_script_compiles_to_expected_bytes():
-    """The first practical example in animation.md."""
+    """The first practical example in animation.md, in the dialect the
+    hardware actually speaks.
+
+    animation.md writes this as BUILD_GRADIENT (no operands) followed by
+    APPEND_GRADIENT per stop. Themes captured from the device's own app
+    instead use FILL_ZONE (no operands) followed by BUILD_GRADIENT carrying
+    (pos, r, g, b) per stop -- see test_captured_themes_recompile_exactly.
+    Where the document and the wire disagree, the wire wins.
+    """
     script = AnimationScript()
     with script.header(0):
         script.select_zone(0)
         script.select_zone(3)
-        script.build_gradient()
-        script.append_gradient(0, 255, 0, 0)
-        script.append_gradient(255, 0, 0, 255)
-        script.map_linear()
+        script.gradient((0, 255, 0, 0), (255, 0, 0, 255))
         script.deselect_all()
     with script.thread(0):
         with script.main():
@@ -198,13 +203,12 @@ def test_gradient_rotate_script_compiles_to_expected_bytes():
 
     assert script.compile() == bytes(
         [
-            Command.SCRIPT_HEADER,
             Command.OPEN_HEADER, 0,
             Command.SELECT_ZONE, 0,
             Command.SELECT_ZONE, 3,
-            Command.BUILD_GRADIENT,
-            Command.APPEND_GRADIENT, 0, 255, 0, 0,
-            Command.APPEND_GRADIENT, 255, 0, 0, 255,
+            Command.FILL_ZONE,
+            Command.BUILD_GRADIENT, 0, 255, 0, 0,
+            Command.BUILD_GRADIENT, 255, 0, 0, 255,
             Command.MAP_LINEAR,
             Command.DESELECT_ALL,
             Command.CLOSE_HEADER,
@@ -246,7 +250,8 @@ def test_loop_parameter_is_two_bytes():
 def test_hex_payload_is_uppercase_and_even_length():
     script = AnimationScript()
     with script.header(0):
-        script.fill_zone(255, 128, 0)
+        script.select_zone(4)
+        script.set_rgb(255, 128, 0)
     with script.thread(0):
         script.rotate_left(1)
     payload = script.to_hex()
@@ -273,7 +278,9 @@ def test_unclosed_scope_is_caught():
 def test_arity_is_enforced():
     script = AnimationScript(strict=False)
     with pytest.raises(CompileError, match="takes 3 parameter"):
-        script.emit(Command.FILL_ZONE, 255)
+        script.emit(Command.SET_RGB, 255)
+    with pytest.raises(CompileError, match="takes 0 parameter"):
+        script.emit(Command.FILL_ZONE, 255)  # captures show no operands
 
 
 def test_disassembler_round_trips():
@@ -285,9 +292,13 @@ def test_disassembler_round_trips():
             script.rotate_right(3)
 
     lines = disassemble(script.to_hex())
-    assert "OPEN_HEADER(thread_index=0)" in lines[1]
+    # The device's own app emits no leading SCRIPT_HEADER byte, so the
+    # stream now starts at OPEN_HEADER.
+    assert "OPEN_HEADER(thread_index=0)" in lines[0]
     assert any("ROTATE_RIGHT(amount=3)" in line for line in lines)
-    assert lines[0] == "SCRIPT_HEADER"
+
+    with_prefix = disassemble(script.to_hex(script_header=True))
+    assert with_prefix[0] == "SCRIPT_HEADER"
 
 
 def test_mismatched_header_and_thread_warns():
@@ -1300,3 +1311,94 @@ def test_direct_calls_do_not_race_the_poll_thread():
         session.stop()
 
     assert not overlaps
+
+
+# ------------------------------- captured themes (app, firmware 1.0.1)
+
+#: Three ANDT payloads captured from the device's own app.
+THEME_OFF = "0200170f040f020f030f000f01070100050a06"
+THEME_RGB = (
+    "0200170f040f020f030f000f0107010005170f0429ff0000"
+    "170f022900ff15170f03290900ff0a06"
+)
+THEME_RGB_PLUS_GRADIENT = (
+    "0200170f040f020f030f000f0107010005170f0011120007003f125504003112aa"
+    "00043614170f0429ff0007170f022900ffd4170f03290d00ff0a06"
+)
+
+
+def test_captured_themes_recompile_exactly():
+    """Byte-exact reproduction is the proof the bytecode model is right.
+
+    These three payloads came off real firmware; if build_theme() emits the
+    same bytes, the opcode arities, the zone order and the omission of the
+    leading SCRIPT_HEADER are all correct.
+    """
+    device = BaravaDevice("192.0.2.1")
+
+    off = device.build_theme()
+    assert off.to_hex().lower() == THEME_OFF
+
+    rgb_theme = device.build_theme(
+        {4: (0xFF, 0x00, 0x00), 2: (0x00, 0xFF, 0x15), 3: (0x09, 0x00, 0xFF)}
+    )
+    assert rgb_theme.to_hex().lower() == THEME_RGB
+
+    combined = device.build_theme(
+        solids={4: (0xFF, 0x00, 0x07), 2: (0x00, 0xFF, 0xD4), 3: (0x0D, 0x00, 0xFF)},
+        gradients={0: ((0x00, 0x07, 0x00, 0x3F),
+                       (0x55, 0x04, 0x00, 0x31),
+                       (0xAA, 0x00, 0x04, 0x36))},
+    )
+    assert combined.to_hex().lower() == THEME_RGB_PLUS_GRADIENT
+
+
+def test_captured_themes_disassemble_without_desync():
+    """Every byte must be consumed; a wrong arity would leave a tail."""
+    for payload in (THEME_OFF, THEME_RGB, THEME_RGB_PLUS_GRADIENT):
+        lines = disassemble(payload)
+        assert lines
+        assert not any("??" in line or "unknown" in line.lower() for line in lines)
+
+
+def test_empty_theme_is_the_all_off_theme():
+    """No zones set == the app's blank theme, not an empty script."""
+    device = BaravaDevice("192.0.2.1")
+    assert device.build_theme().to_hex().lower() == THEME_OFF
+
+
+def test_zone_order_matches_the_app_header():
+    from pyrava import ZONE_ORDER
+
+    assert ZONE_ORDER == (4, 2, 3, 0, 1)
+    header = disassemble(THEME_OFF)
+    selected = [
+        int(line.split("=")[1].rstrip(")"))
+        for line in header if "SELECT_ZONE" in line
+    ]
+    assert tuple(selected) == ZONE_ORDER
+
+
+def test_set_zone_colors_uploads_to_cmpam():
+    device, fake = _device()
+    device.set_zone_colors({4: (255, 0, 0)})
+    handler, body, _ = fake.log[-1]
+    assert handler == "CMPAM"
+    assert "ANDT" in body
+
+
+def test_clear_zones_sends_the_off_theme():
+    device, fake = _device()
+    device.clear_zones()
+    body = fake.log[-1][1]
+    assert THEME_OFF.upper() in body
+
+
+def test_set_zone_gradient_targets_one_zone():
+    device, fake = _device()
+    device.set_zone_gradient(0, (0, 7, 0, 63), (255, 0, 4, 54))
+    payload = parse_body(fake.log[-1][1])["ANDT"]
+    lines = "\n".join(disassemble(payload))
+    assert "FILL_ZONE" in lines
+    assert lines.count("BUILD_GRADIENT") == 2
+    assert "MAP_LINEAR" in lines

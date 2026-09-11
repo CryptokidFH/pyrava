@@ -134,7 +134,13 @@ SPEC: dict[Command, _Spec] = {
     Command.START_SCOPE_LOOP: _Spec(1, 2, ("iterations",)),
     Command.SELECT_ZONE: _Spec(1, 1, ("zone",)),
     Command.DESELECT_ZONE: _Spec(1, 1, ("zone",)),
-    Command.FILL_ZONE: _Spec(3, 1, ("r", "g", "b")),
+    # Captured themes show FILL_ZONE taking no operands: it opens a
+    # gradient build, which BUILD_GRADIENT stops then fill. The spec
+    # table implied (r, g, b), but that desyncs the stream.
+    Command.FILL_ZONE: _Spec(0, 1, ()),
+    # BUILD_GRADIENT carries each stop; confirmed against captured
+    # themes (pos 0/85/170 for an evenly spaced three-stop gradient).
+    Command.BUILD_GRADIENT: _Spec(4, 1, ("pos", "r", "g", "b")),
     Command.APPEND_GRADIENT: _Spec(4, 1, ("pos", "r", "g", "b")),
     Command.ROTATE_LEFT: _Spec(1, 1, ("amount",)),
     Command.ROTATE_RIGHT: _Spec(1, 1, ("amount",)),
@@ -340,14 +346,25 @@ class AnimationScript:
 
     # -- fills, gradients, masks ------------------------------------------
 
-    def fill_zone(self, r: int, g: int, b: int) -> "AnimationScript":
-        return self.emit(Command.FILL_ZONE, r, g, b)
+    def fill_zone(self) -> "AnimationScript":
+        """Open a gradient build for the selected zone.
 
-    def build_gradient(self) -> "AnimationScript":
-        return self.emit(Command.BUILD_GRADIENT)
+        Takes no operands. Captured themes show the sequence
+        ``FILL_ZONE, BUILD_GRADIENT*, MAP_LINEAR``; the stops live on
+        :meth:`build_gradient`.
+        """
+        return self.emit(Command.FILL_ZONE)
+
+    def build_gradient(self, pos: int, r: int, g: int, b: int) -> "AnimationScript":
+        """Add one gradient stop at ``pos`` (0-255, normalised across the zone)."""
+        return self.emit(Command.BUILD_GRADIENT, pos, r, g, b)
 
     def append_gradient(self, pos: int, r: int, g: int, b: int) -> "AnimationScript":
-        """Add a key frame at ``pos`` (0-255, normalised across the zone)."""
+        """Add a key frame via ``APPEND_GRADIENT`` (0x13).
+
+        The captured themes all use :meth:`build_gradient` (0x12) instead, so
+        this opcode's role is still unconfirmed.
+        """
         return self.emit(Command.APPEND_GRADIENT, pos, r, g, b)
 
     def map_linear(self) -> "AnimationScript":
@@ -364,15 +381,17 @@ class AnimationScript:
         return self.emit(Command.RESET_L2)
 
     def gradient(self, *stops: tuple[int, int, int, int], smooth: bool = False):
-        """Build, fill and map a gradient in one call.
+        """Fill the selected zone with a gradient.
 
-        ``stops`` are ``(pos, r, g, b)`` key frames.
+        ``stops`` are ``(pos, r, g, b)`` key frames. Emits the sequence the
+        device's own app produces: ``FILL_ZONE``, one ``BUILD_GRADIENT`` per
+        stop, then a mapping instruction.
         """
         if len(stops) < 2:
             raise CompileError("a gradient needs at least two key frames")
-        self.build_gradient()
+        self.fill_zone()
         for pos, r, g, b in stops:
-            self.append_gradient(pos, r, g, b)
+            self.build_gradient(pos, r, g, b)
         return self.map_smooth() if smooth else self.map_linear()
 
     # -- L1 transforms -----------------------------------------------------
@@ -452,16 +471,25 @@ class AnimationScript:
                 stacklevel=3,
             )
 
-    def compile(self) -> bytes:
-        """Return the full script, prefixed with ``SCRIPT_HEADER``."""
+    def compile(self, *, script_header: bool = False) -> bytes:
+        """Return the compiled bytecode.
+
+        The reference table lists a ``SCRIPT_HEADER`` (0x00) instruction, and
+        earlier versions always prefixed it. Themes captured from the
+        device's own app start directly at ``OPEN_HEADER`` (0x02) with no
+        such prefix, so it is now off by default. Pass
+        ``script_header=True`` to restore the old output.
+        """
         self._validate()
         if not self._buf:
             raise CompileError("script is empty")
-        return bytes([Command.SCRIPT_HEADER]) + bytes(self._buf)
+        if script_header:
+            return bytes([Command.SCRIPT_HEADER]) + bytes(self._buf)
+        return bytes(self._buf)
 
-    def to_hex(self, *, uppercase: bool = True) -> str:
+    def to_hex(self, *, uppercase: bool = True, script_header: bool = False) -> str:
         """Compile and hex-encode for the ``ANDT`` variable."""
-        text = self.compile().hex()
+        text = self.compile(script_header=script_header).hex()
         return text.upper() if uppercase else text
 
     def __len__(self) -> int:
