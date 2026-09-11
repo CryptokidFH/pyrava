@@ -137,6 +137,35 @@ def rgb_to_hue(r: int, g: int, b: int) -> float:
     return hue_fraction * 360
 
 
+def punch_color(
+    rgb: tuple[int, int, int],
+    *,
+    saturation: float = 1.5,
+    min_value: float | None = None,
+) -> tuple[int, int, int]:
+    """Boost an RGB colour's saturation, leaving hue and brightness alone.
+
+    Washed-out output on these LEDs tracks low *saturation*, not low
+    brightness. A capture from the device's own app sets a "dimmed blue" as
+    fully saturated (1.00) at 25% brightness, and it reads as a clean deep
+    blue -- so dim colours are perfectly legible as long as they're
+    saturated. By contrast a screen-derived colour like ``(68, 43, 43)``
+    sits at 0.37 saturation and similar brightness, and that is what looks
+    pale.
+
+    So this multiplies saturation by ``saturation`` (capped at 1.0) and by
+    default touches nothing else. ``min_value`` optionally floors brightness
+    too, but it's off by default: raising it would brighten exactly the
+    dim-but-saturated colours the device handles well.
+    """
+    h, s, v = colorsys.rgb_to_hsv(*[c / 255 for c in rgb])
+    s = min(1.0, s * saturation)
+    if min_value is not None:
+        v = max(min_value, v)
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return (round(r * 255), round(g * 255), round(b * 255))
+
+
 def generate_gradient_stops(
     colors: Sequence[tuple[int, int, int]],
 ) -> list[tuple[int, int, int, int]]:

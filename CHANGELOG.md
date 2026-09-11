@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.3 (unreleased)
+
+### Added
+
+- `punch_color(rgb)`: optional saturation boost for muted source colours
+  (e.g. from screen capture). Hue and brightness are left alone by default;
+  `min_value=` optionally floors brightness.
+
+### Notes
+
+- A fourth gradient capture -- a theme the app describes as a single "dimmed
+  blue" -- decoded to three fully saturated stops at ~20-25% brightness and
+  recompiles byte-exactly. This confirms two things: gradient stops really
+  are plain RGB, and **dark colours are fully representable**. An earlier
+  note in 0.4.2 suggested those near-black-looking captured values were
+  suspicious; they were not, and that reading was wrong.
+- Consequently, washed-out output tracks low *saturation*, not low
+  brightness. `punch_color()` therefore does not floor brightness by
+  default, which would have brightened away exactly the dim-but-saturated
+  colours the device renders well.
+
+## 0.4.2 (unreleased)
+
+### Added
+
+- `punch_color(rgb)`: optional caller-side saturation boost + brightness
+  floor, for when muted source colours (e.g. from screen capture) render
+  palely on the diffused ring LEDs. Not applied automatically anywhere.
+
+### Notes
+
+- Investigated a report of gradients looking washed out. Hardware probing
+  confirmed the gradient path is correct: stops are literal RGB and render
+  faithfully (a grey ramp renders as grey, which rules out any hue/HSV
+  misread). The paleness was faithful rendering of genuinely muted source
+  colours, not a decode bug. `punch_color()` is the opt-in remedy.
+
 ## 0.4.1 (unreleased)
 
 Device-safety fixes prompted by the firmware author's notes, after a rapid

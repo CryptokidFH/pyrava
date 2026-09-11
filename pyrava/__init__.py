@@ -27,6 +27,7 @@ from .client import (
     describe_heater_health,
     discover_devices,
     generate_gradient_stops,
+    punch_color,
     new_sender_id,
     rgb,
     rgb_to_hue,
@@ -56,7 +57,7 @@ from .packet import (
 )
 from .transport import HttpTransport, Transport
 
-__version__ = "0.4.1"
+__version__ = "0.4.3"
 
 __all__ = [
     "__version__",
@@ -68,6 +69,7 @@ __all__ = [
     "describe_heater_health",
     "discover_devices",
     "generate_gradient_stops",
+    "punch_color",
     "new_sender_id",
     "rgb",
     "rgb_to_hue",

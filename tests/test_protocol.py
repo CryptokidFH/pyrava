@@ -1648,3 +1648,63 @@ def test_first_upload_is_not_delayed():
     start = time.monotonic()
     device.set_zone_colors({Zone.TOP: (255, 0, 0)})
     assert time.monotonic() - start < 1.0
+
+
+def test_punch_color_boosts_saturation_leaves_grey_alone():
+    from pyrava import punch_color
+
+    # Grey has no saturation to boost -> unchanged.
+    assert punch_color((60, 60, 60)) == (60, 60, 60)
+    # A muted colour gets more saturated (further from grey).
+    import colorsys
+    before = colorsys.rgb_to_hsv(*[c / 255 for c in (68, 43, 43)])
+    after_rgb = punch_color((68, 43, 43))
+    after = colorsys.rgb_to_hsv(*[c / 255 for c in after_rgb])
+    assert after[1] >= before[1]  # saturation not decreased
+
+
+def test_punch_color_preserves_brightness_by_default():
+    """Dim-but-saturated is legitimate: the app's own themes use it, so the
+    default must not brighten it away."""
+    import colorsys
+
+    from pyrava import punch_color
+
+    dim_blue = (7, 0, 63)  # from a captured theme: sat 1.00, val 0.25
+    out = punch_color(dim_blue)
+    _, _, v_in = colorsys.rgb_to_hsv(*[c / 255 for c in dim_blue])
+    _, _, v_out = colorsys.rgb_to_hsv(*[c / 255 for c in out])
+    assert abs(v_in - v_out) < 0.02  # brightness untouched
+
+
+def test_punch_color_floors_brightness_when_asked():
+    from pyrava import punch_color
+
+    r, g, b = punch_color((5, 0, 0), min_value=0.2)
+    assert max(r, g, b) >= int(0.2 * 255) - 1
+
+
+def test_captured_single_color_dimmed_gradient_recompiles():
+    """A theme the app describes as one dimmed blue: three fully saturated
+    stops at ~20-25% brightness. Proves dark colours are representable and
+    that stop bytes really are plain RGB."""
+    CAPTURED = (
+        "0200170f040f020f030f000f0107010005170f0411120007003f"
+        "125504003112aa000436140a06"
+    )
+    device = BaravaDevice("192.0.2.1")
+    script = device.build_theme(gradients={
+        Zone.TOP: ((0, 7, 0, 63), (85, 4, 0, 49), (170, 0, 4, 54)),
+    })
+    assert script.to_hex().lower() == CAPTURED
+
+
+def test_dim_saturated_colors_survive_the_round_trip():
+    """Regression: dim stops must not be silently brightened or desaturated
+    anywhere in the theme path."""
+    device, fake = _device()
+    device.set_zone_gradient(Zone.TOP, (0, 7, 0, 63), (170, 0, 4, 54))
+    payload = parse_body(fake.log[-1][1])["ANDT"]
+    lines = "\n".join(disassemble(payload))
+    assert "BUILD_GRADIENT(pos=0, r=7, g=0, b=63)" in lines
+    assert "BUILD_GRADIENT(pos=170, r=0, g=4, b=54)" in lines

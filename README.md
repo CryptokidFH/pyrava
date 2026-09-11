@@ -280,6 +280,23 @@ This is the natural hook for a generated palette -- cluster centres from a
 k-means pass over screen colours, for instance -- since it's just a flat
 list of RGB tuples with no positions to work out yourself.
 
+Stops are plain RGB and render faithfully, including dark ones: a captured
+theme the app calls a "dimmed blue" is three fully saturated stops at ~20-25%
+brightness, and it reads as a clean deep blue. **Washed-out output tracks low
+saturation, not low brightness.** A screen-derived colour like `(68, 43, 43)`
+is only 37% saturated at similar brightness, and that is what looks pale.
+
+`punch_color(rgb)` is an optional saturation boost (hue and brightness left
+alone) for exactly that case:
+
+```python
+device.set_gradient([punch_color(c) for c in colors])
+```
+
+It deliberately does *not* raise brightness by default -- that would wash out
+the dim-but-saturated colours the device handles well. Pass
+`min_value=` if you do want a floor.
+
 ### Zone groups
 
 Named aliases for faster reference, matching the lamp's own theming:
