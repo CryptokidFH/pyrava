@@ -371,7 +371,22 @@ class AnimationScript:
         return self.emit(Command.MAP_LINEAR)
 
     def map_smooth(self) -> "AnimationScript":
-        """Map the gradient with sigmoid interpolation."""
+        """Map the gradient with sigmoid interpolation (``MAP_SMOOTH``, 0x15).
+
+        Reported to switch the affected LEDs *off* on firmware 1.0.1, and no
+        captured theme from the device's own app ever emits this opcode --
+        every one ends in ``MAP_LINEAR`` (0x14). It's likely unimplemented or
+        broken in this firmware, so this warns rather than silently
+        producing a dead theme. Use :meth:`map_linear` instead.
+        """
+        warnings.warn(
+            "MAP_SMOOTH (smooth=True) is reported to blank the zone on "
+            "firmware 1.0.1, and the device's own app never emits it -- "
+            "every captured theme uses MAP_LINEAR. Use smooth=False unless "
+            "you're deliberately testing this opcode.",
+            UserWarning,
+            stacklevel=2,
+        )
         return self.emit(Command.MAP_SMOOTH)
 
     def release_gradient(self) -> "AnimationScript":

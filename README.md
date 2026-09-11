@@ -258,6 +258,21 @@ Zone.BOTTOM_OUTER)`, the order the app selects them in a theme header.
 `examples/zone_probe.py` re-lights each ring by name, useful for a quick
 sanity check after a firmware update.
 
+### One flat colour per zone
+
+Often the better choice for a sampled palette:
+
+```python
+light.set_zone_palette([(255, 80, 0), (0, 200, 255), (120, 0, 255)])
+light.set_zone_palette(colors, zones="lava_lamp")
+```
+
+Colours are assigned to zones in `ZONE_ORDER`, cycling if there are fewer
+colours than zones. Each zone holds a lot of LEDs, so a three-stop gradient
+spreads its colours far apart and spends most of the ring on blended
+intermediates -- which reads as washed out. One flat colour per zone keeps
+every sampled colour at full strength.
+
 ### Gradients from any number of colours
 
 ```python
@@ -308,6 +323,11 @@ Saturation and brightness are separate levers and neither implies the other:
 when driving lights that handle brightness as a separate channel. It changes
 muted colours substantially rather than just deepening them, so it's opt-in.
 `min_value=` floors brightness instead of pinning it.
+
+**`smooth=True` is not usable on firmware 1.0.1.** `MAP_SMOOTH` (0x15) is
+reported to switch the affected LEDs off, and no captured theme from the
+device's own app ever emits it -- every one ends in `MAP_LINEAR` (0x14). It
+now warns if you ask for it.
 
 ### Zone groups
 

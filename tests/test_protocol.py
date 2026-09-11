@@ -1748,3 +1748,62 @@ def test_punch_color_levers_are_independent():
     bright_only = punch_color(base, saturation=1.0, value=1.0)
     _, s2, v2 = colorsys.rgb_to_hsv(*[c / 255 for c in bright_only])
     assert s2 == pytest.approx(s0, abs=0.01) and v2 > v0
+
+
+# ------------------------------------------------- solid per-zone palette
+
+def test_set_zone_palette_assigns_one_colour_per_zone():
+    device, fake = _device()
+    device.set_zone_palette([(255, 0, 0), (0, 255, 0), (0, 0, 255),
+                             (10, 10, 10), (20, 20, 20)])
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    rgbs = [l.strip() for l in lines if "SET_RGB" in l]
+    assert len(rgbs) == 5
+    assert "SET_RGB(r=255, g=0, b=0)" in rgbs[0]
+    # No gradient machinery at all in solid mode.
+    assert not any("BUILD_GRADIENT" in l or "FILL_ZONE" in l for l in lines)
+
+
+def test_set_zone_palette_cycles_when_short():
+    device, fake = _device()
+    device.set_zone_palette([(1, 1, 1), (2, 2, 2)])
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    rgbs = [l for l in lines if "SET_RGB" in l]
+    assert len(rgbs) == 5  # every zone still gets a colour
+    assert "r=1, g=1, b=1" in rgbs[0]
+    assert "r=2, g=2, b=2" in rgbs[1]
+    assert "r=1, g=1, b=1" in rgbs[2]  # wrapped
+
+
+def test_set_zone_palette_targets_a_group():
+    device, fake = _device()
+    device.set_zone_palette([(255, 0, 0), (0, 255, 0)], zones="downlamp")
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    assert len([l for l in lines if "SET_RGB" in l]) == 2
+
+
+def test_set_zone_palette_rejects_empty():
+    device, _ = _device()
+    with pytest.raises(ValueError, match="at least one colour"):
+        device.set_zone_palette([])
+
+
+def test_map_smooth_warns_about_blanking():
+    """No captured theme uses MAP_SMOOTH and it's reported to blank zones."""
+    from pyrava import AnimationScript
+
+    script = AnimationScript()
+    with script.header(0):
+        script.select_zone(4)
+        with pytest.warns(UserWarning, match="blank the zone"):
+            script.gradient((0, 255, 0, 0), (128, 0, 0, 255), smooth=True)
+
+
+def test_map_linear_does_not_warn(recwarn):
+    from pyrava import AnimationScript
+
+    script = AnimationScript()
+    with script.header(0):
+        script.select_zone(4)
+        script.gradient((0, 255, 0, 0), (128, 0, 0, 255))
+    assert not [w for w in recwarn if "blank the zone" in str(w.message)]

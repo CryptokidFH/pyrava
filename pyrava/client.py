@@ -909,6 +909,48 @@ class BaravaDevice:
         """
         return self.set_zone_colors(gradients={zone: stops}, smooth=smooth)
 
+    def set_zone_palette(
+        self,
+        colors: Sequence[tuple[int, int, int]],
+        *,
+        zones: int | str | Sequence[int | str] = ZONE_ORDER,
+    ) -> Batch:
+        """Give each zone one flat colour -- no gradient, no interpolation.
+
+        ``light.set_zone_palette(colors)`` assigns ``colors[0]`` to the first
+        zone, ``colors[1]`` to the second, and so on in :data:`ZONE_ORDER`,
+        cycling if there are fewer colours than zones and ignoring any
+        extras.
+
+        Often clearer than a gradient for a sampled palette. Each zone holds
+        many LEDs, so a three-stop gradient spreads its colours far apart and
+        spends most of the ring on blended intermediates, which reads as
+        washed out. One flat colour per zone keeps every sampled colour at
+        full strength.
+
+        ``zones`` accepts a single zone, a group name, or a sequence mixing
+        both, so ``set_zone_palette(colors, zones="lava_lamp")`` spreads the
+        palette across just those three rings.
+        """
+        colors = list(colors)
+        if not colors:
+            raise ValueError("need at least one colour")
+
+        keys: Sequence[int | str] = (
+            [zones] if isinstance(zones, (int, str)) else list(zones)
+        )
+        expanded: list[int] = []
+        for key in keys:
+            expanded.extend(_expand_zone_key(key))
+        seen: set[int] = set()
+        expanded = [z for z in expanded if not (z in seen or seen.add(z))]
+
+        mapping = {
+            zone: tuple(colors[i % len(colors)])
+            for i, zone in enumerate(expanded)
+        }
+        return self.set_zone_colors(mapping)
+
     def set_gradient(
         self,
         colors: Sequence[tuple[int, int, int]],

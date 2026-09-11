@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+### Added
+
+- `set_zone_palette(colors, zones=...)`: one flat colour per zone, no
+  gradient. Colours map onto zones in `ZONE_ORDER`, cycling if short. Each
+  zone spans many LEDs, so a three-stop gradient spends most of the ring on
+  blended intermediates and reads as washed out; flat per-zone colours keep
+  each sampled colour at full strength.
+- `punch_color(..., value=)` pins brightness outright, alongside the
+  saturation multiplier and optional `min_value=` floor. The three levers are
+  independent: saturation deepens, value brightens.
+
+### Changed
+
+- `map_smooth()` / `smooth=True` now warns. `MAP_SMOOTH` (0x15) is reported
+  to blank the affected LEDs on firmware 1.0.1, and no captured theme from
+  the device's own app uses it -- all four end in `MAP_LINEAR` (0x14).
+  Likely unimplemented or broken in this firmware.
+
 ## 0.4.4 (unreleased)
 
 ### Added
