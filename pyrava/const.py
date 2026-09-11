@@ -90,6 +90,25 @@ class HeaterHealth(IntEnum):
 
 
 # --------------------------------------------------------------------------
+# LED zones
+# --------------------------------------------------------------------------
+
+
+class Zone(IntEnum):
+    """Addressable LED zone indices, confirmed by lighting each in turn.
+
+    Five zones: a top ring, a middle ring split into inner/outer, and a
+    bottom ring split into inner/outer.
+    """
+
+    BOTTOM_INNER = 0
+    MIDDLE_INNER = 2
+    MIDDLE_OUTER = 3
+    TOP = 4
+    BOTTOM_OUTER = 1
+
+
+# --------------------------------------------------------------------------
 # Event handlers (the "body-handler" value)
 # --------------------------------------------------------------------------
 

@@ -13,8 +13,8 @@ pulls in nothing. Two optional extras:
 
 | Extra | Brings | Needed for |
 | --- | --- | --- |
-| `zeroconf` | `discovery` | `discover_devices()`; not needed if you connect by IP |
-| `requests` | `fast` | connection reuse, lower latency at short ping intervals |
+| `discovery` | `zeroconf` | `discover_devices()`; not needed if you connect by IP |
+| `fast` | `requests` | connection reuse, lower latency at short ping intervals |
 
 Requires Python 3.8+.
 
@@ -227,8 +227,10 @@ The lamp has five addressable zones. Set them with real RGB -- unlike the
 single-hue `FCLR` path, the zone path carries all three channels:
 
 ```python
-light.set_zone_colors({4: (255, 0, 0), 2: (0, 255, 0), 3: (0, 0, 255)})
-light.set_zone_gradient(0, (0, 7, 0, 63), (255, 0, 4, 54))
+from pyrava import Zone
+
+light.set_zone_colors({Zone.TOP: (255, 0, 0), Zone.MIDDLE_INNER: (0, 255, 0)})
+light.set_zone_gradient(Zone.BOTTOM_INNER, (0, 7, 0, 63), (255, 0, 4, 54))
 light.clear_zones()
 ```
 
@@ -240,15 +242,21 @@ Under the hood this compiles a static animation and uploads it to `CMPAM`,
 reproducing the structure the app emits: a header selecting every zone, then
 one atomic scope with a per-zone fill.
 
-**Zone numbering.** `ZONE_ORDER` is `(4, 2, 3, 0, 1)`, the order the app
-selects them. Which index is which physical ring is only partly known: 0 and
-1 are the bottom pair, 4/2/3 are the top and middle group, but inner vs outer
-isn't pinned down. `examples/zone_probe.py` lights one at a time so you can
-label them:
+**Zone numbering**, confirmed by lighting each ring in turn:
 
-```bash
-python examples/zone_probe.py 192.168.1.249
-```
+| `Zone` | Index | Ring |
+| --- | --- | --- |
+| `TOP` | 4 | top |
+| `MIDDLE_INNER` | 2 | middle, inner |
+| `MIDDLE_OUTER` | 3 | middle, outer |
+| `BOTTOM_INNER` | 0 | bottom, inner |
+| `BOTTOM_OUTER` | 1 | bottom, outer |
+
+`Zone` is an `IntEnum`, so a plain int still works anywhere -- `ZONE_ORDER`
+is `(Zone.TOP, Zone.MIDDLE_INNER, Zone.MIDDLE_OUTER, Zone.BOTTOM_INNER,
+Zone.BOTTOM_OUTER)`, the order the app selects them in a theme header.
+`examples/zone_probe.py` re-lights each ring by name, useful for a quick
+sanity check after a firmware update.
 
 ## The cyclical model
 

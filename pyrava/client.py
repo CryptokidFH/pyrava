@@ -19,6 +19,7 @@ from .const import (
     Header,
     Privilege,
     Var,
+    Zone,
 )
 from .discovery import CANDIDATE_TYPES, DiscoveredService, browse, scan
 from .errors import BaravaError, TransportError
@@ -64,17 +65,13 @@ DATA_POLL_INTERVAL_MS = 500
 MAX_POLL_DELAY = MIN_PING_INTERVAL_MS / 1000.0
 
 #: Zone indices in the order the device's own app selects them in a theme
-#: header (``SELECT_ZONE 4, 2, 3, 0, 1``). Five zones, matching the hardware:
-#: a top ring, a middle inner and outer ring, and a bottom inner and outer.
-#:
-#: Which index is which ring is only partly pinned down. A captured theme
-#: described as setting "the first three zones" to red/green/blue set 4, 2
-#: and 3, so those are the first three in this order. A theme described as
-#: colouring "the bottom two zones" drove a gradient on zone 0. That leaves
-#: 0 and 1 as the bottom pair and 4/2/3 as the top and middle group, without
-#: fixing inner vs outer either way. ``examples/zone_probe.py`` lights one
-#: zone at a time so you can label them for your unit.
-ZONE_ORDER: tuple[int, ...] = (4, 2, 3, 0, 1)
+#: header. Confirmed by lighting each zone in turn: 4 is the top ring, 2/3
+#: are the middle ring's inner/outer, 0/1 are the bottom ring's inner/outer.
+#: See :class:`~pyrava.const.Zone` for named access.
+ZONE_ORDER: tuple[int, ...] = (
+    Zone.TOP, Zone.MIDDLE_INNER, Zone.MIDDLE_OUTER,
+    Zone.BOTTOM_INNER, Zone.BOTTOM_OUTER,
+)
 
 #: Heater temperatures arrive as hundredths of a degree Fahrenheit
 #: (6930 -> 69.30 F). Confirmed against hardware -- an earlier version
@@ -676,6 +673,11 @@ class BaravaDevice:
         zone. A zone in neither mapping is left dark, which is how the app
         writes an all-off theme.
 
+        Zone indices accept :class:`~pyrava.const.Zone` directly, e.g.
+        ``{Zone.TOP: (255, 0, 0)}`` -- confirmed by lighting each ring in
+        turn: ``TOP``, ``MIDDLE_INNER``/``MIDDLE_OUTER``, and
+        ``BOTTOM_INNER``/``BOTTOM_OUTER``.
+
         Returns the script so you can inspect or extend it; pass it to
         :meth:`upload_animation`, or use :meth:`set_zone_colors` to do both.
         """
@@ -706,9 +708,9 @@ class BaravaDevice:
     ) -> Batch:
         """Set each LED zone's colour in one upload.
 
-        ``light.set_zone_colors({4: (255, 0, 0), 2: (0, 255, 0)})`` lights
-        two zones and leaves the rest dark. Unlike ``set_fill_hue``, this
-        takes real RGB -- the zone path carries all three channels, so
+        ``light.set_zone_colors({Zone.TOP: (255, 0, 0), Zone.MIDDLE_INNER: (0, 255, 0)})``
+        lights two rings and leaves the rest dark. Unlike ``set_fill_hue``,
+        this takes real RGB -- the zone path carries all three channels, so
         saturation survives here.
         """
         return self.upload_animation(
@@ -723,7 +725,7 @@ class BaravaDevice:
     ) -> Batch:
         """Run a gradient across one zone, leaving the others dark.
 
-        ``light.set_zone_gradient(0, (0, 7, 0, 63), (255, 0, 4, 54))``
+        ``light.set_zone_gradient(Zone.BOTTOM_INNER, (0, 7, 0, 63), (255, 0, 4, 54))``
         """
         return self.set_zone_colors(gradients={zone: stops}, smooth=smooth)
 

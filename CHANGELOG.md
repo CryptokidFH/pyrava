@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 (unreleased)
+
+### Added
+
+- `Zone` enum: `TOP`, `MIDDLE_INNER`, `MIDDLE_OUTER`, `BOTTOM_INNER`,
+  `BOTTOM_OUTER`, confirmed by lighting each ring in turn on real hardware
+  (`4, 2, 3, 0, 1` respectively). `ZONE_ORDER` now built from these names.
+  `Zone` is an `IntEnum`, so existing code passing raw indices is unaffected.
+- `examples/zone_probe.py` repurposed from discovery to verification: it now
+  re-lights each named zone in sequence as a quick sanity check.
+
 ## 0.3.0 (unreleased)
 
 Decoded three `CMPAM`/`ANDT` theme payloads captured from the device's own

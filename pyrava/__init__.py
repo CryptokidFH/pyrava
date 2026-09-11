@@ -30,7 +30,7 @@ from .client import (
     rgb,
     rgb_to_hue,
 )
-from .const import Handler, Header, HeaterHealth, Privilege, Var
+from .const import Handler, Header, HeaterHealth, Privilege, Var, Zone
 from .discovery import CANDIDATE_TYPES, DiscoveredService, browse, list_service_types, scan
 from .errors import (
     BaravaError,
@@ -55,7 +55,7 @@ from .packet import (
 )
 from .transport import HttpTransport, Transport
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "__version__",
@@ -80,6 +80,7 @@ __all__ = [
     "HeaterHealth",
     "Privilege",
     "Var",
+    "Zone",
     # packets
     "Batch",
     "HexInt",

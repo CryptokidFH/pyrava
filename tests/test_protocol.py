@@ -1402,3 +1402,25 @@ def test_set_zone_gradient_targets_one_zone():
     assert "FILL_ZONE" in lines
     assert lines.count("BUILD_GRADIENT") == 2
     assert "MAP_LINEAR" in lines
+
+
+def test_zone_names_match_confirmed_mapping():
+    """Confirmed by physically lighting each ring in turn."""
+    from pyrava import Zone
+
+    assert Zone.TOP == 4
+    assert Zone.MIDDLE_INNER == 2
+    assert Zone.MIDDLE_OUTER == 3
+    assert Zone.BOTTOM_INNER == 0
+    assert Zone.BOTTOM_OUTER == 1
+
+
+def test_zone_enum_works_as_a_plain_int_in_theme_building():
+    """Zone is an IntEnum so it's a drop-in dict key / int wherever a raw
+    zone index was previously used."""
+    from pyrava import Zone
+
+    device = BaravaDevice("192.0.2.1")
+    by_enum = device.build_theme({Zone.TOP: (255, 0, 0)}).to_hex()
+    by_int = device.build_theme({4: (255, 0, 0)}).to_hex()
+    assert by_enum == by_int
