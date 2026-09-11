@@ -60,6 +60,13 @@ MIN_PING_INTERVAL_MS = 500
 #: anything else should sit at DEFAULT_PING_INTERVAL_MS.
 DATA_POLL_INTERVAL_MS = 500
 
+#: Minimum seconds between animation uploads. The firmware author warns that
+#: loading a compiled animation forces heavy context switching in the drivers
+#: and interpreter, and that flooding the lights with colour packets can wedge
+#: the device. This is a conservative default, not a measured floor -- adjust
+#: per device via ``BaravaDevice.min_animation_gap``.
+DEFAULT_MIN_ANIMATION_GAP_S = 1.0
+
 #: Longest gap between queue-pop pings while waiting on a reply. Bounded
 #: below by the 500ms floor rather than the old 250ms, which was pinging the
 #: device twice as fast as `barava_network_impl.md` allows.
@@ -226,6 +233,9 @@ class BaravaDevice:
         self.follow_device_interval = follow_device_interval
         self._warned_unregistered_batch = False
         self._warned_low_interval = False
+        #: Minimum seconds between animation uploads; see upload_animation().
+        self.min_animation_gap: float = DEFAULT_MIN_ANIMATION_GAP_S
+        self._last_animation_upload: float | None = None
         # Best-effort record of what this session last told the device each
         # zone should show. There's no device readback -- see
         # set_zone_state()'s docstring for what this can and can't do.
@@ -334,10 +344,11 @@ class BaravaDevice:
                 if batch.ping_interval < MIN_PING_INTERVAL_MS:
                     if not self._warned_low_interval:
                         log.warning(
-                            "device advertises a %dms ping interval, below the "
-                            "%dms minimum in the vendor's design notes; using "
-                            "%dms instead. Pass follow_device_interval=False "
-                            "to pin your own value.",
+                            "the device's key block reports %dms in the field "
+                            "we read as a ping interval, below the %dms minimum "
+                            "in the vendor's design notes; using %dms instead. "
+                            "If that field isn't actually the interval, pass "
+                            "follow_device_interval=False to ignore it.",
                             batch.ping_interval,
                             MIN_PING_INTERVAL_MS,
                             MIN_PING_INTERVAL_MS,
@@ -693,18 +704,38 @@ class BaravaDevice:
     def upload_animation(
         self, script: AnimationScript | bytes | str, *, spectrum: bool | int = 0
     ) -> Batch:
-        """Compile and send an animation to the ``CMPAM`` handler."""
+        """Compile and send an animation to the ``CMPAM`` handler.
+
+        Loading a compiled animation is expensive on the device: the firmware
+        author warns that each one forces heavy context switching across the
+        drivers and interpreter, and that hammering the lights with colour
+        packets can wedge it. So consecutive uploads are spaced at least
+        :attr:`min_animation_gap` seconds apart -- a short blocking sleep is
+        inserted if you call this faster than that. Set the attribute to 0 to
+        disable, if you know a given sequence is safe.
+        """
         if isinstance(script, AnimationScript):
             payload = script.to_hex()
         elif isinstance(script, (bytes, bytearray)):
             payload = bytes(script).hex().upper()
         else:
             payload = str(script).strip().upper()
-        return self.request(
+        self._throttle_animation()
+        batch = self.request(
             Handler.COMPILE_ANIMATION,
             {Var.ANIMATION_DATA.value: payload, Var.SPEC_ON.value: int(spectrum)},
             wait=False,
         )
+        self._last_animation_upload = time.monotonic()
+        return batch
+
+    def _throttle_animation(self) -> None:
+        gap = self.min_animation_gap
+        if gap <= 0 or self._last_animation_upload is None:
+            return
+        elapsed = time.monotonic() - self._last_animation_upload
+        if elapsed < gap:
+            time.sleep(gap - elapsed)
 
     # -- zones -------------------------------------------------------------
 

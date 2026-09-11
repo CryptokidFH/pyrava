@@ -396,16 +396,37 @@ class AnimationScript:
 
     # -- L1 transforms -----------------------------------------------------
 
+    def _check_rotation_amount(self, amount: int) -> None:
+        """Reject a zero rotation amount.
+
+        The firmware author reports that animations with "rotation and hue
+        set to 0 cause a deadlock in the animation engine that is a pain to
+        fix". The exact trigger isn't fully specified, but a zero-step
+        rotation is a no-op that plausibly spins the engine, so it's blocked
+        outright rather than risk wedging the device. If a legitimate use for
+        a zero rotation turns up, this is the one place to relax.
+        """
+        if int(amount) == 0:
+            raise CompileError(
+                "rotation amount 0 is refused: the firmware author reports "
+                "zero rotation/hue deadlocks the animation engine. Use a "
+                "non-zero step, or omit the rotation entirely."
+            )
+
     def rotate_left(self, amount: int) -> "AnimationScript":
+        self._check_rotation_amount(amount)
         return self.emit(Command.ROTATE_LEFT, amount)
 
     def rotate_right(self, amount: int) -> "AnimationScript":
+        self._check_rotation_amount(amount)
         return self.emit(Command.ROTATE_RIGHT, amount)
 
     def rotate_up(self, amount: int) -> "AnimationScript":
+        self._check_rotation_amount(amount)
         return self.emit(Command.ROTATE_UP, amount)
 
     def rotate_down(self, amount: int) -> "AnimationScript":
+        self._check_rotation_amount(amount)
         return self.emit(Command.ROTATE_DOWN, amount)
 
     def scale_colors(self, scalar: int) -> "AnimationScript":

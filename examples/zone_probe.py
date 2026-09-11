@@ -30,8 +30,9 @@ def main() -> None:
     parser.add_argument("host")
     parser.add_argument("--colour", default="255,255,255",
                         help="r,g,b used to light each zone (default white)")
-    parser.add_argument("--hold", type=float, default=1.0,
-                        help="seconds to hold each zone (default 1)")
+    parser.add_argument("--hold", type=float, default=2.0,
+                        help="seconds to hold each zone (default 2; uploads "
+                             "are throttled to at least 1s apart regardless)")
     args = parser.parse_args()
 
     rgb = tuple(int(p) for p in args.colour.split(","))
@@ -43,16 +44,31 @@ def main() -> None:
     print(f"connected to {device.device_id or device.host}")
     print(f"expected mapping: {[(z.value, z.name) for z in ZONE_ORDER]}\n")
 
+    from pyrava.errors import TransportError
+
+    lit_any = False
     try:
         for zone in ZONE_ORDER:
             print(f"  {zone.name} (index {zone.value}) lit as rgb{rgb}")
-            device.set_zone_colors({zone: rgb})
-            time.sleep(args.hold)
+            try:
+                device.set_zone_colors({zone: rgb})
+                lit_any = True
+            except TransportError as exc:
+                print(f"    upload failed: {exc}")
+                print("    the device may be busy; waiting a moment and moving on")
+                time.sleep(2.0)
+                continue
+            time.sleep(max(args.hold, 1.0))
     except KeyboardInterrupt:
         print("\nstopped early")
     finally:
-        device.clear_zones()
-        print("\nall zones cleared")
+        if lit_any:
+            try:
+                device.clear_zones()
+                print("\nall zones cleared")
+            except TransportError as exc:
+                print(f"\ncouldn't clear zones: {exc}")
+                print("if the device is unresponsive, power-cycle it")
 
     print("\nIf a name didn't match what lit up, pyrava.const.Zone needs updating.")
 

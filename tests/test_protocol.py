@@ -348,7 +348,11 @@ class _DeferredDevice:
 
 def _device(**kwargs):
     fake = _DeferredDevice()
-    return BaravaDevice("192.0.2.10", transport=fake, **kwargs), fake
+    device = BaravaDevice("192.0.2.10", transport=fake, **kwargs)
+    # Tests hit a mock transport with no real device to protect, so drop the
+    # inter-upload throttle to keep the suite fast.
+    device.min_animation_gap = 0
+    return device, fake
 
 
 def test_default_endpoint_is_the_real_one():
@@ -1574,3 +1578,73 @@ def test_clear_zones_resets_the_whole_shadow():
     device.clear_zones()
     assert device.known_zone_colors == {}
     assert device.known_zone_gradients == {}
+
+
+# ------------------------------------------------ device-safety guardrails
+
+def test_zero_rotation_is_refused():
+    """The firmware author reports zero rotation/hue deadlocks the engine."""
+    from pyrava import AnimationScript
+    from pyrava.errors import CompileError
+
+    script = AnimationScript()
+    with script.header(0):
+        script.select_zone(4)
+    with script.thread(0):
+        with script.main():
+            for method in ("rotate_left", "rotate_right", "rotate_up", "rotate_down"):
+                with pytest.raises(CompileError, match="rotation amount 0"):
+                    getattr(script, method)(0)
+
+
+def test_nonzero_rotation_still_allowed():
+    from pyrava import AnimationScript
+
+    script = AnimationScript()
+    with script.header(0):
+        script.select_zone(4)
+    with script.thread(0):
+        with script.main():
+            script.rotate_left(5)  # must not raise
+    assert "ROTATE_LEFT" in "\n".join(disassemble(script.to_hex()))
+
+
+def test_animation_uploads_are_throttled_by_default():
+    """Consecutive uploads must be spaced to protect the device."""
+    import time
+
+    fake = _DeferredDevice()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    device.min_animation_gap = 0.3  # shorten for the test but keep it real
+
+    start = time.monotonic()
+    device.set_zone_colors({Zone.TOP: (255, 0, 0)})
+    device.set_zone_colors({Zone.TOP: (0, 255, 0)})
+    elapsed = time.monotonic() - start
+    assert elapsed >= 0.3
+
+
+def test_animation_throttle_can_be_disabled():
+    import time
+
+    fake = _DeferredDevice()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    device.min_animation_gap = 0
+
+    start = time.monotonic()
+    for _ in range(3):
+        device.set_zone_colors({Zone.TOP: (255, 0, 0)})
+    assert time.monotonic() - start < 0.5
+
+
+def test_first_upload_is_not_delayed():
+    """Throttle only spaces *consecutive* uploads; the first is immediate."""
+    import time
+
+    fake = _DeferredDevice()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    device.min_animation_gap = 5.0
+
+    start = time.monotonic()
+    device.set_zone_colors({Zone.TOP: (255, 0, 0)})
+    assert time.monotonic() - start < 1.0

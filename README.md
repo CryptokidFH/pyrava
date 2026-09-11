@@ -365,10 +365,28 @@ for data polling like heater temperature. `pyrava` enforces that:
 
 * `DEFAULT_PING_INTERVAL_MS` is 1000.
 * `poll(interval=...)` is clamped to 500ms, with a warning.
-* Firmware 1.0.1 advertises **200ms** in its response key block, below the
-  floor. `follow_device_interval` records it as `reported_ping_interval` but
-  clamps the value actually used, rather than pinging 2.5x faster than the
-  vendor says is safe.
+* The device's response key block carries a second number
+  (`<<...=&200>=&{...}>`) that we read as its ping interval, following the
+  `network.md` batch format. On the observed hardware that value is **200**,
+  below the floor. `follow_device_interval` records it as
+  `reported_ping_interval` but clamps the value actually used. If that field
+  turns out not to be an interval at all, pass `follow_device_interval=False`
+  to ignore it.
+
+### Not flooding the device with uploads
+
+Loading a compiled animation is expensive on the device — the firmware
+author warns of heavy driver/interpreter context switching per upload, and
+that flooding it with colour packets can wedge it. So `upload_animation()`
+(and everything built on it: `set_zone_colors`, `set_gradient`,
+`set_zone_state`, etc.) spaces consecutive uploads at least
+`min_animation_gap` seconds apart, inserting a short blocking sleep if you
+call faster. Default is 1s; set `light.min_animation_gap = 0` to disable if
+you know a sequence is safe.
+
+The animation compiler also refuses a **zero rotation amount**
+(`rotate_left(0)` and friends), which the firmware author reports deadlocks
+the animation engine. Use a non-zero step or omit the rotation.
 
 ## Receiving events
 

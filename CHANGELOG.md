@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.1 (unreleased)
+
+Device-safety fixes prompted by the firmware author's notes, after a rapid
+sequence of zone uploads wedged a device mid-run.
+
+### Fixed
+
+- `examples/zone_probe.py` uploaded a full animation per zone with no pacing,
+  which could hang the device partway and then time out in cleanup. It now
+  relies on the new upload throttle, handles a mid-run transport failure per
+  zone instead of aborting, and only attempts cleanup if something was lit.
+
+### Added
+
+- Animation uploads are throttled: `upload_animation()` and everything built
+  on it space consecutive uploads at least `min_animation_gap` seconds apart
+  (default 1s; set to 0 to disable). The firmware author warns that loading a
+  compiled animation forces heavy context switching and that flooding the
+  device can wedge it.
+- The animation compiler refuses a zero rotation amount (`rotate_left(0)`
+  etc.), reported by the firmware author to deadlock the animation engine.
+
+### Changed
+
+- The sub-floor ping-interval warning no longer asserts the device
+  "advertises" 200ms as fact. The 200 is the second field of the response key
+  block, which we interpret as the ping interval per `network.md`; the
+  warning now says so and points to `follow_device_interval=False` if that
+  reading is wrong. (The value's meaning is an open question for the vendor.)
+
 ## 0.4.0 (unreleased)
 
 Decoded a fourth captured payload -- a single-zone gradient -- confirming
