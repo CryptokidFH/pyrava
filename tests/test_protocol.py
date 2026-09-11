@@ -27,7 +27,7 @@ from pyrava import (
     rgb,
 )
 from pyrava.client import BaravaDevice, new_sender_id
-from pyrava.const import Handler
+from pyrava.const import Handler, Zone
 from pyrava.errors import BaravaError, CompileError
 
 
@@ -1424,3 +1424,153 @@ def test_zone_enum_works_as_a_plain_int_in_theme_building():
     by_enum = device.build_theme({Zone.TOP: (255, 0, 0)}).to_hex()
     by_int = device.build_theme({4: (255, 0, 0)}).to_hex()
     assert by_enum == by_int
+
+
+# ---------------------------------------------------- gradients from N colors
+
+def test_generate_gradient_stops_matches_captured_spacing():
+    """i * (256 // N), confirmed by two independent 3-stop captures."""
+    from pyrava import generate_gradient_stops
+
+    stops = generate_gradient_stops([(255, 80, 0), (255, 0, 160), (41, 0, 255)])
+    assert [pos for pos, *_ in stops] == [0, 85, 170]
+    assert stops == [
+        (0, 255, 80, 0),
+        (85, 255, 0, 160),
+        (170, 41, 0, 255),
+    ]
+
+
+def test_generate_gradient_stops_scales_to_other_counts():
+    from pyrava import generate_gradient_stops
+
+    two = generate_gradient_stops([(255, 0, 0), (0, 0, 255)])
+    assert [pos for pos, *_ in two] == [0, 128]
+
+    five = generate_gradient_stops([(0, 0, 0)] * 5)
+    assert [pos for pos, *_ in five] == [0, 51, 102, 153, 204]
+
+
+def test_generate_gradient_stops_requires_at_least_two_colors():
+    from pyrava import generate_gradient_stops
+
+    with pytest.raises(ValueError, match="at least two"):
+        generate_gradient_stops([(255, 0, 0)])
+
+
+def test_captured_single_zone_gradient_recompiles_exactly():
+    """Confirms FILL_ZONE + BUILD_GRADIENT works scoped to one zone alone,
+    not just as part of a multi-zone theme."""
+    CAPTURED = (
+        "0200170f040f020f030f000f0107010005170f04111200ff8800"
+        "1255ff00a012aa2900ff140a06"
+    )
+    device = BaravaDevice("192.0.2.1")
+    script = device.build_theme(gradients={
+        Zone.TOP: ((0, 255, 136, 0), (85, 255, 0, 160), (170, 41, 0, 255)),
+    })
+    assert script.to_hex().lower() == CAPTURED
+
+
+def test_set_gradient_defaults_to_every_zone():
+    device, fake = _device()
+    device.set_gradient([(255, 0, 0), (0, 255, 0), (0, 0, 255)])
+    payload = parse_body(fake.log[-1][1])["ANDT"]
+    lines = "\n".join(disassemble(payload))
+    assert lines.count("FILL_ZONE") == 5  # every zone got the gradient
+
+
+def test_set_gradient_targets_one_group():
+    device, fake = _device()
+    device.set_gradient([(255, 0, 0), (0, 255, 0)], zones="downlamp")
+    payload = parse_body(fake.log[-1][1])["ANDT"]
+    lines = "\n".join(disassemble(payload))
+    assert lines.count("FILL_ZONE") == 2  # BOTTOM_INNER + BOTTOM_OUTER only
+
+
+# --------------------------------------------------------------- zone groups
+
+def test_zone_groups_match_requested_aliases():
+    from pyrava import ZONE_GROUPS, Zone
+
+    assert set(ZONE_GROUPS["lava_lamp"]) == {Zone.TOP, Zone.MIDDLE_INNER, Zone.MIDDLE_OUTER}
+    assert set(ZONE_GROUPS["downlamp"]) == {Zone.BOTTOM_INNER, Zone.BOTTOM_OUTER}
+    assert ZONE_GROUPS["top_ooze"] == (Zone.TOP,)
+    assert ZONE_GROUPS["bottom_ooze"] == (Zone.MIDDLE_INNER,)
+    assert ZONE_GROUPS["fluid"] == (Zone.MIDDLE_OUTER,)
+
+
+def test_unknown_group_name_raises_a_helpful_error():
+    device = BaravaDevice("192.0.2.1")
+    with pytest.raises(ValueError, match="unknown zone group"):
+        device.build_theme({"not_a_real_group": (255, 0, 0)})
+
+
+def test_group_name_expands_to_member_zones_in_theme():
+    device = BaravaDevice("192.0.2.1")
+    by_group = device.build_theme({"top_ooze": (255, 0, 0)})
+    by_zone = device.build_theme({Zone.TOP: (255, 0, 0)})
+    assert by_group.to_hex() == by_zone.to_hex()
+
+
+def test_overlapping_groups_last_write_wins():
+    """lava_lamp includes TOP; top_ooze is also just TOP. Whichever is
+    given second in the mapping should determine TOP's final colour."""
+    device = BaravaDevice("192.0.2.1")
+    script = device.build_theme({
+        "lava_lamp": (255, 0, 0),
+        "top_ooze": (0, 255, 0),  # should win for zone TOP specifically
+    })
+    lines = disassemble(script.to_hex())
+    last_zone4_index = max(
+        i for i, l in enumerate(lines) if "SELECT_ZONE(zone=4)" in l
+    )
+    assert "SET_RGB(r=0, g=255, b=0)" in lines[last_zone4_index + 1]
+
+
+# --------------------------------------------------- partial zone updates
+
+def test_set_zone_state_tracks_what_was_sent():
+    device, fake = _device()
+    device.set_zone_colors({Zone.TOP: (255, 0, 0)})
+    assert device.known_zone_colors == {Zone.TOP: (255, 0, 0)}
+
+
+def test_clear_zone_preserves_other_remembered_zones():
+    device, fake = _device()
+    device.set_zone_state("lava_lamp", (255, 80, 0))
+    device.set_zone_state("downlamp", (0, 40, 255))
+    assert set(device.known_zone_colors) == {
+        Zone.TOP, Zone.MIDDLE_INNER, Zone.MIDDLE_OUTER,
+        Zone.BOTTOM_INNER, Zone.BOTTOM_OUTER,
+    }
+
+    device.clear_zone("downlamp")
+    assert Zone.BOTTOM_INNER not in device.known_zone_colors
+    assert Zone.BOTTOM_OUTER not in device.known_zone_colors
+    # lava_lamp's three zones must survive untouched
+    for z in (Zone.TOP, Zone.MIDDLE_INNER, Zone.MIDDLE_OUTER):
+        assert device.known_zone_colors[z] == (255, 80, 0)
+
+    payload = parse_body(fake.log[-1][1])["ANDT"]
+    lines = "\n".join(disassemble(payload))
+    assert lines.count("SET_RGB(r=255, g=80, b=0)") == 3
+    assert "SET_RGB(r=0, g=40, b=255)" not in lines
+
+
+def test_set_zone_state_replaces_a_gradient_with_a_solid():
+    device, fake = _device()
+    device.set_zone_gradient(Zone.TOP, (0, 255, 0, 0), (128, 0, 0, 255))
+    assert Zone.TOP in device.known_zone_gradients
+    device.set_zone_state(Zone.TOP, (10, 20, 30))
+    assert Zone.TOP not in device.known_zone_gradients
+    assert device.known_zone_colors[Zone.TOP] == (10, 20, 30)
+
+
+def test_clear_zones_resets_the_whole_shadow():
+    device, fake = _device()
+    device.set_zone_colors({Zone.TOP: (1, 2, 3)})
+    assert device.known_zone_colors
+    device.clear_zones()
+    assert device.known_zone_colors == {}
+    assert device.known_zone_gradients == {}

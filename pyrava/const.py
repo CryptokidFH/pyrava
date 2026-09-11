@@ -108,6 +108,20 @@ class Zone(IntEnum):
     BOTTOM_OUTER = 1
 
 
+#: Named groups of zones for faster reference, matching how the lamp's
+#: product theming maps onto the physical rings. Overlapping on purpose --
+#: TOP_OOZE and BOTTOM_OOZE are each one zone within LAVA_LAMP as a whole.
+#: Pass a group name anywhere a zone is expected (``set_zone_colors``,
+#: ``build_theme``, etc.) and it expands to its member zones.
+ZONE_GROUPS: dict[str, tuple[Zone, ...]] = {
+    "lava_lamp": (Zone.TOP, Zone.MIDDLE_INNER, Zone.MIDDLE_OUTER),
+    "downlamp": (Zone.BOTTOM_INNER, Zone.BOTTOM_OUTER),
+    "top_ooze": (Zone.TOP,),
+    "bottom_ooze": (Zone.MIDDLE_INNER,),
+    "fluid": (Zone.MIDDLE_OUTER,),
+}
+
+
 # --------------------------------------------------------------------------
 # Event handlers (the "body-handler" value)
 # --------------------------------------------------------------------------

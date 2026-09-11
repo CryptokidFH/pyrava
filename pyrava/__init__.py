@@ -26,11 +26,12 @@ from .client import (
     PollingSession,
     describe_heater_health,
     discover_devices,
+    generate_gradient_stops,
     new_sender_id,
     rgb,
     rgb_to_hue,
 )
-from .const import Handler, Header, HeaterHealth, Privilege, Var, Zone
+from .const import ZONE_GROUPS, Handler, Header, HeaterHealth, Privilege, Var, Zone
 from .discovery import CANDIDATE_TYPES, DiscoveredService, browse, list_service_types, scan
 from .errors import (
     BaravaError,
@@ -55,16 +56,18 @@ from .packet import (
 )
 from .transport import HttpTransport, Transport
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
     "__version__",
     # client
     "ZONE_ORDER",
+    "ZONE_GROUPS",
     "BaravaDevice",
     "PollingSession",
     "describe_heater_health",
     "discover_devices",
+    "generate_gradient_stops",
     "new_sender_id",
     "rgb",
     "rgb_to_hue",

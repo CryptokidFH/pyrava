@@ -258,6 +258,79 @@ Zone.BOTTOM_OUTER)`, the order the app selects them in a theme header.
 `examples/zone_probe.py` re-lights each ring by name, useful for a quick
 sanity check after a firmware update.
 
+### Gradients from any number of colours
+
+```python
+light.set_gradient([(255, 80, 0), (255, 0, 160), (40, 0, 255)])          # all zones
+light.set_gradient(colors, zones="lava_lamp")                             # one group
+light.set_gradient(colors, zones=[Zone.TOP, "downlamp"])                  # mixed
+```
+
+`generate_gradient_stops()` turns a flat list of colours into positioned
+stops: `i * (256 // N)` for the i-th of N colours. That spacing is confirmed
+against two *independently* captured gradients that both used exactly 0, 85,
+170 for three stops -- not the more obvious `i * 255 / (N-1)` that would run
+edge-to-edge. It matters because every zone is a physical ring: this spacing
+divides the ring evenly over all N segments *including* the wraparound seam
+back to the first colour, rather than compressing everything into 0-255 and
+leaving one oddly-sized gap. Only independently confirmed at N=3; other
+counts follow the same formula on the assumption it generalises.
+
+This is the natural hook for a generated palette -- cluster centres from a
+k-means pass over screen colours, for instance -- since it's just a flat
+list of RGB tuples with no positions to work out yourself.
+
+### Zone groups
+
+Named aliases for faster reference, matching the lamp's own theming:
+
+| Group | Zones |
+| --- | --- |
+| `lava_lamp` | `TOP`, `MIDDLE_INNER`, `MIDDLE_OUTER` |
+| `downlamp` | `BOTTOM_INNER`, `BOTTOM_OUTER` |
+| `top_ooze` | `TOP` |
+| `bottom_ooze` | `MIDDLE_INNER` |
+| `fluid` | `MIDDLE_OUTER` |
+
+These overlap on purpose -- `top_ooze` is one zone within `lava_lamp` as a
+whole. A group name works anywhere a zone does:
+
+```python
+light.set_zone_colors({"lava_lamp": (255, 80, 0), "downlamp": (0, 40, 255)})
+```
+
+When two entries touch the same physical zone (a group and one of its own
+members, say), whichever is given later in the mapping wins.
+
+*On naming:* kept your scheme rather than substituting one -- `downlamp`
+already avoids colliding with `set_desk_state()`/`set_desk_color()`, which
+control the lamp's separate, actual desk-light hardware feature (`DSTT`/
+`DCLR`) despite the visual overlap you mentioned. If you'd rather rename any
+of these, they're one dict in `pyrava/const.py`.
+
+### Changing one zone without touching the rest
+
+There's no per-zone update on the wire, and no way to read the device's
+current colours back -- every `set_zone_colors()` call replaces the whole
+theme. `set_zone_state()` works around this with a client-side shadow of
+what *this* `BaravaDevice` has itself sent:
+
+```python
+light.set_zone_state("lava_lamp", (255, 80, 0))
+light.set_zone_state("downlamp", (0, 40, 255))
+
+light.clear_zone("downlamp")   # lava_lamp survives untouched
+```
+
+**The limitation you already suspected is real.** This only knows about
+state sent through this session. If the app, another client, or an earlier
+run changed the theme since, this doesn't see it, and calling
+`set_zone_state()` will silently replay this session's last-known colours
+over whatever's actually on the device now. `known_zone_colors` and
+`known_zone_gradients` expose the shadow if you want to inspect it. Short of
+firmware adding a readback, there's no fully correct fix for this -- it's a
+genuine gap, not something the client can paper over completely.
+
 ## The cyclical model
 
 The vendor's design notes (`barava_network_impl.md`) describe the interface as

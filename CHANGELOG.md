@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+Decoded a fourth captured payload -- a single-zone gradient -- confirming
+`FILL_ZONE`/`BUILD_GRADIENT` work identically whether scoped to one zone or
+several, and revealing the stop-spacing convention.
+
+### Added
+
+- `generate_gradient_stops(colors)`: turns a flat list of RGB colours into
+  positioned `(pos, r, g, b)` stops using `i * (256 // N)` spacing --
+  confirmed against two independently captured gradients that both landed
+  on exactly 0, 85, 170 for three stops, consistent with each zone being a
+  physical ring (this spacing divides the ring evenly including the
+  wraparound seam, rather than compressing into 0-255 and leaving one odd
+  gap). Only independently confirmed at N=3.
+- `set_gradient(colors, zones=...)`: builds and applies a generated gradient
+  to one zone, several, a named group, or every zone (the default) in one
+  call. The natural hook for a generated palette, e.g. k-means cluster
+  centres from screen colours -- it's just a flat RGB list, no positions to
+  work out.
+- `ZONE_GROUPS`: named zone aliases -- `lava_lamp`, `downlamp`, `top_ooze`,
+  `bottom_ooze`, `fluid` -- matching the lamp's own product theming. A group
+  name now works anywhere a zone does, in `build_theme()`, `set_zone_colors()`,
+  `set_zone_gradient()`, and `set_gradient()`. Groups may overlap; the later
+  entry wins for any zone touched twice.
+- `set_zone_state(key, color)` / `clear_zone(key)`: change or clear one zone
+  or group while replaying every other zone as this session last set it, a
+  client-side workaround for there being no per-zone update or state
+  readback on the wire. `known_zone_colors` / `known_zone_gradients` expose
+  the underlying shadow. Documented limitation: this only reflects what
+  *this* `BaravaDevice` instance has itself sent -- it cannot see changes
+  made by the app or another client.
+
 ## 0.3.1 (unreleased)
 
 ### Added

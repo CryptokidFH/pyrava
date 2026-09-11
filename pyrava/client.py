@@ -14,6 +14,7 @@ from .animation import AnimationScript
 from .const import (
     DEV_HANDLERS,
     VAR_BY_LABEL,
+    ZONE_GROUPS,
     Handler,
     HeaterHealth,
     Header,
@@ -129,6 +130,52 @@ def rgb_to_hue(r: int, g: int, b: int) -> float:
     return hue_fraction * 360
 
 
+def generate_gradient_stops(
+    colors: Sequence[tuple[int, int, int]],
+) -> list[tuple[int, int, int, int]]:
+    """Turn a flat list of colours into evenly spaced ``(pos, r, g, b)`` stops.
+
+    Spacing is ``i * (256 // N)`` for the i-th of N colours -- confirmed
+    against two independently captured gradients that both used exactly this
+    spacing for three stops (0, 85, 170), not the more obvious ``i * 255 /
+    (N-1)`` that would run edge-to-edge. That matters because every zone is a
+    physical *ring*: this spacing leaves an implicit final segment
+    wrapping from the last stop back to the first, dividing the ring evenly
+    over all N segments including the seam, rather than compressing the
+    colours into 0-255 and leaving one oddly-sized wraparound gap.
+
+    Only confirmed at N=3. The formula is applied uniformly for other N on
+    the assumption it generalises, but hasn't been independently checked
+    past three stops.
+    """
+    colors = list(colors)
+    if len(colors) < 2:
+        raise ValueError(
+            "need at least two colours to build a gradient; use "
+            "set_zone_colors() for a single solid colour"
+        )
+    step = 256 // len(colors)
+    return [(i * step, r, g, b) for i, (r, g, b) in enumerate(colors)]
+
+
+def _expand_zone_key(key: int | str) -> tuple[int, ...]:
+    """Resolve a zone key to one or more zone indices.
+
+    A plain zone (int or :class:`~pyrava.const.Zone`) resolves to itself. A
+    string looks up :data:`~pyrava.const.ZONE_GROUPS` and expands to every
+    zone in that group.
+    """
+    if isinstance(key, str):
+        try:
+            return tuple(int(z) for z in ZONE_GROUPS[key])
+        except KeyError:
+            raise ValueError(
+                f"unknown zone group {key!r}; known groups: "
+                f"{sorted(ZONE_GROUPS)}"
+            ) from None
+    return (int(key),)
+
+
 def new_sender_id(prefix: str = "~") -> str:
     """Generate a runtime session ID.
 
@@ -179,6 +226,11 @@ class BaravaDevice:
         self.follow_device_interval = follow_device_interval
         self._warned_unregistered_batch = False
         self._warned_low_interval = False
+        # Best-effort record of what this session last told the device each
+        # zone should show. There's no device readback -- see
+        # set_zone_state()'s docstring for what this can and can't do.
+        self._zone_solids: dict[int, tuple[int, int, int]] = {}
+        self._zone_gradients: dict[int, tuple[tuple[int, int, int, int], ...]] = {}
         self.privilege: Privilege | int | None = None
         self.last_info: dict[str, Any] = {}
         #: Raw text of the most recent response, kept for debugging.
@@ -658,8 +710,8 @@ class BaravaDevice:
 
     def build_theme(
         self,
-        solids: Mapping[int, tuple[int, int, int]] | None = None,
-        gradients: Mapping[int, Sequence[tuple[int, int, int, int]]] | None = None,
+        solids: Mapping[int | str, tuple[int, int, int]] | None = None,
+        gradients: Mapping[int | str, Sequence[tuple[int, int, int, int]]] | None = None,
         *,
         smooth: bool = False,
         zones: Sequence[int] = ZONE_ORDER,
@@ -670,38 +722,58 @@ class BaravaDevice:
         selects every zone, then one atomic scope holding a per-zone fill.
         ``solids`` maps a zone to one ``(r, g, b)``; ``gradients`` maps a zone
         to ``(pos, r, g, b)`` stops, where ``pos`` spans 0-255 across the
-        zone. A zone in neither mapping is left dark, which is how the app
-        writes an all-off theme.
+        zone (:func:`generate_gradient_stops` builds these from a flat list
+        of colours). A zone in neither mapping is left dark, which is how
+        the app writes an all-off theme.
 
-        Zone indices accept :class:`~pyrava.const.Zone` directly, e.g.
-        ``{Zone.TOP: (255, 0, 0)}`` -- confirmed by lighting each ring in
-        turn: ``TOP``, ``MIDDLE_INNER``/``MIDDLE_OUTER``, and
-        ``BOTTOM_INNER``/``BOTTOM_OUTER``.
+        Any key -- in ``solids``, ``gradients``, or ``zones`` -- accepts a
+        :class:`~pyrava.const.Zone` directly (``{Zone.TOP: (255, 0, 0)}``,
+        confirmed by lighting each ring in turn) or a name from
+        :data:`~pyrava.const.ZONE_GROUPS` (``{"lava_lamp": (255, 80, 0)}``),
+        which expands to every zone in that group. Groups can overlap; when
+        two entries touch the same physical zone, whichever is processed
+        last wins, in the order: ``gradients`` then ``solids``, each in the
+        order given.
 
         Returns the script so you can inspect or extend it; pass it to
         :meth:`upload_animation`, or use :meth:`set_zone_colors` to do both.
         """
+        header_zones: list[int] = []
+        for zone in zones:
+            header_zones.extend(_expand_zone_key(zone))
+        for key in (gradients or {}):
+            header_zones.extend(_expand_zone_key(key))
+        for key in (solids or {}):
+            header_zones.extend(_expand_zone_key(key))
+        # Preserve first-seen order but drop duplicates -- the header just
+        # needs every touched zone selected once, order doesn't matter to
+        # the device beyond that.
+        seen: set[int] = set()
+        header_zones = [z for z in header_zones if not (z in seen or seen.add(z))]
+
         script = AnimationScript()
         with script.header(0):
             script.reset_l2()
-            for zone in zones:
+            for zone in header_zones:
                 script.select_zone(zone)
         with script.thread(0):
             with script.atomic():
-                for zone, stops in (gradients or {}).items():
-                    script.reset_l2()
-                    script.select_zone(zone)
-                    script.gradient(*stops, smooth=smooth)
-                for zone, (r, g, b) in (solids or {}).items():
-                    script.reset_l2()
-                    script.select_zone(zone)
-                    script.set_rgb(r, g, b)
+                for key, stops in (gradients or {}).items():
+                    for zone in _expand_zone_key(key):
+                        script.reset_l2()
+                        script.select_zone(zone)
+                        script.gradient(*stops, smooth=smooth)
+                for key, (r, g, b) in (solids or {}).items():
+                    for zone in _expand_zone_key(key):
+                        script.reset_l2()
+                        script.select_zone(zone)
+                        script.set_rgb(r, g, b)
         return script
 
     def set_zone_colors(
         self,
-        solids: Mapping[int, tuple[int, int, int]] | None = None,
-        gradients: Mapping[int, Sequence[tuple[int, int, int, int]]] | None = None,
+        solids: Mapping[int | str, tuple[int, int, int]] | None = None,
+        gradients: Mapping[int | str, Sequence[tuple[int, int, int, int]]] | None = None,
         *,
         smooth: bool = False,
         zones: Sequence[int] = ZONE_ORDER,
@@ -712,26 +784,148 @@ class BaravaDevice:
         lights two rings and leaves the rest dark. Unlike ``set_fill_hue``,
         this takes real RGB -- the zone path carries all three channels, so
         saturation survives here.
+
+        Keys accept a group name from :data:`~pyrava.const.ZONE_GROUPS`
+        instead of a zone: ``light.set_zone_colors({"lava_lamp": (255, 80, 0)})``.
+        See :meth:`build_theme` for how overlapping groups resolve.
         """
-        return self.upload_animation(
+        batch = self.upload_animation(
             self.build_theme(solids, gradients, smooth=smooth, zones=zones)
         )
+        self._remember_theme(solids, gradients, zones)
+        return batch
+
+    def _remember_theme(
+        self,
+        solids: Mapping[int | str, tuple[int, int, int]] | None,
+        gradients: Mapping[int | str, Sequence[tuple[int, int, int, int]]] | None,
+        zones: Sequence[int],
+    ) -> None:
+        """Update the local shadow of what each zone was last told to show."""
+        touched: set[int] = set()
+        for key in zones:
+            touched.update(_expand_zone_key(key))
+        for key, stops in (gradients or {}).items():
+            for zone in _expand_zone_key(key):
+                touched.add(zone)
+                self._zone_gradients[zone] = tuple(stops)
+                self._zone_solids.pop(zone, None)
+        for key, color in (solids or {}).items():
+            for zone in _expand_zone_key(key):
+                touched.add(zone)
+                self._zone_solids[zone] = color
+                self._zone_gradients.pop(zone, None)
+        # A selected zone that got neither a solid nor a gradient is dark in
+        # this theme; drop any stale colour the shadow had for it.
+        for zone in touched:
+            if zone not in self._zone_solids and zone not in self._zone_gradients:
+                self._zone_solids.pop(zone, None)
+                self._zone_gradients.pop(zone, None)
 
     def set_zone_gradient(
         self,
-        zone: int,
+        zone: int | str,
         *stops: tuple[int, int, int, int],
         smooth: bool = False,
     ) -> Batch:
-        """Run a gradient across one zone, leaving the others dark.
+        """Run a gradient across one zone (or every zone in a group), leaving
+        the rest dark.
 
         ``light.set_zone_gradient(Zone.BOTTOM_INNER, (0, 7, 0, 63), (255, 0, 4, 54))``
+
+        ``zone`` accepts a group name too -- every zone in the group gets
+        the same gradient.
         """
         return self.set_zone_colors(gradients={zone: stops}, smooth=smooth)
 
+    def set_gradient(
+        self,
+        colors: Sequence[tuple[int, int, int]],
+        *,
+        zones: int | str | Sequence[int | str] = ZONE_ORDER,
+        smooth: bool = False,
+    ) -> Batch:
+        """Build an evenly spaced gradient from N colours and apply it.
+
+        ``light.set_gradient([(255, 0, 0), (0, 255, 0), (0, 0, 255)])`` puts
+        the same three-colour gradient on every zone (the default). Pass
+        ``zones`` to target specific zones or a group instead:
+        ``light.set_gradient(colors, zones="lava_lamp")``,
+        ``light.set_gradient(colors, zones=[Zone.TOP, "downlamp"])``.
+
+        This is the natural hook for a generated palette -- e.g. cluster
+        centres from a k-means pass over screen colours -- since it takes a
+        plain list of RGB tuples with no positions to work out yourself. See
+        :func:`generate_gradient_stops` for the spacing rule, and its
+        confirmation caveat past three colours.
+        """
+        stops = generate_gradient_stops(colors)
+        target: Sequence[int | str] = (
+            [zones] if isinstance(zones, (int, str)) else list(zones)
+        )
+        return self.set_zone_colors(
+            gradients={key: stops for key in target}, smooth=smooth
+        )
+
     def clear_zones(self, *, zones: Sequence[int] = ZONE_ORDER) -> Batch:
         """Turn every addressable zone off, the way the app's blank theme does."""
-        return self.upload_animation(self.build_theme(zones=zones))
+        batch = self.upload_animation(self.build_theme(zones=zones))
+        for zone in zones:
+            for z in _expand_zone_key(zone):
+                self._zone_solids.pop(z, None)
+                self._zone_gradients.pop(z, None)
+        return batch
+
+    @property
+    def known_zone_colors(self) -> dict[int, tuple[int, int, int]]:
+        """Solid colours this session last set, by zone. See :meth:`set_zone_state`."""
+        return dict(self._zone_solids)
+
+    @property
+    def known_zone_gradients(self) -> dict[int, tuple[tuple[int, int, int, int], ...]]:
+        """Gradient stops this session last set, by zone. See :meth:`set_zone_state`."""
+        return dict(self._zone_gradients)
+
+    def set_zone_state(
+        self, key: int | str, color: tuple[int, int, int] | None, *, smooth: bool = False
+    ) -> Batch:
+        """Change or clear one zone (or group) while leaving the rest as-is.
+
+        There is no way to read the device's current per-zone colours back
+        -- no ``GET`` for this exists in the protocol -- so "the rest"
+        means whatever *this* ``BaravaDevice`` last sent via
+        ``set_zone_colors()``, ``set_gradient()``, or this method, not the
+        device's actual current state. If the app, another client, or an
+        earlier script run changed the theme since, this doesn't know about
+        it, and calling this will silently overwrite those changes back to
+        whatever this session last knew.
+
+        ``color=None`` turns the zone off -- this is the "clear zones 0/1
+        without touching the rest of the theme" case: since there's no
+        partial-theme update on the wire either, this works by replaying
+        every other zone this session remembers alongside the new one.
+
+        ``key`` accepts a group name; every zone in the group is set (or
+        cleared) together.
+        """
+        for zone in _expand_zone_key(key):
+            if color is None:
+                self._zone_solids.pop(zone, None)
+                self._zone_gradients.pop(zone, None)
+            else:
+                self._zone_solids[zone] = color
+                self._zone_gradients.pop(zone, None)
+        return self.set_zone_colors(
+            dict(self._zone_solids), dict(self._zone_gradients), smooth=smooth
+        )
+
+    def clear_zone(self, key: int | str) -> Batch:
+        """Turn off one zone or group, leaving others as this session last set them.
+
+        Shorthand for ``set_zone_state(key, None)``; see that method's
+        docstring for what "leaving others" actually means here.
+        """
+        return self.set_zone_state(key, None)
 
     # -- maintenance -------------------------------------------------------
 
