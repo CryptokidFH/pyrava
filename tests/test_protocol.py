@@ -2054,6 +2054,7 @@ def test_cmd_screen_preview_runs_without_a_device():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=True, sort=True, preview=True,
+        shuffle=False, seed=None,
     )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2070,6 +2071,7 @@ def test_cmd_screen_missing_pillow_gives_a_clean_error(capsys):
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=False, sort=False, preview=True,
+        shuffle=False, seed=None,
     )
     with patch("pyrava.__main__.dominant_colors",
                side_effect=ImportError('screen sampling needs Pillow: pip install "pyrava[screen]"')):
@@ -2107,3 +2109,275 @@ def test_every_name_cmd_screen_references_is_actually_importable():
         and not hasattr(builtins, n)
     ]
     assert not missing, f"cmd_screen references undefined names: {missing}"
+
+
+# --------------------------------------------------- pyrava screen zones/solid
+
+def test_parse_zones_arg_digit_becomes_int():
+    from pyrava.__main__ import _parse_zones_arg
+
+    assert _parse_zones_arg("4") == 4
+    assert isinstance(_parse_zones_arg("4"), int)
+
+
+def test_parse_zones_arg_name_stays_string():
+    from pyrava.__main__ import _parse_zones_arg
+
+    assert _parse_zones_arg("lava_lamp") == "lava_lamp"
+
+
+def test_parse_zones_arg_none_passthrough():
+    from pyrava.__main__ import _parse_zones_arg
+
+    assert _parse_zones_arg(None) is None
+
+
+def test_screen_zones_digit_targets_that_zone_not_a_group_lookup():
+    """Regression: --zones 4 used to look up the group name "4" and raise
+    'unknown zone group', instead of targeting zone index 4."""
+    import argparse
+    from unittest.mock import patch
+
+    device, fake = _device()
+    original = cli_module()._connect
+    cli_module()._connect = lambda a: device
+    try:
+        args = argparse.Namespace(
+            host="x", port=8080, timeout=5.0, json=False,
+            n=3, gradient=False, solid=True, zones="4",
+            punch=False, sort=False, preview=False, shuffle=False, seed=None,
+        )
+        with patch("pyrava.__main__.dominant_colors",
+                   return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
+            rc = cli_module().cmd_screen(args)
+    finally:
+        cli_module()._connect = original
+    assert rc == 0
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    rgbs = [l for l in lines if "SET_RGB" in l]
+    assert len(rgbs) == 1  # only zone 4 got a colour
+    assert "SET_RGB(r=255, g=0, b=0)" in rgbs[0]
+
+
+def test_screen_zones_group_name_still_works():
+    import argparse
+    from unittest.mock import patch
+
+    device, fake = _device()
+    original = cli_module()._connect
+    cli_module()._connect = lambda a: device
+    try:
+        args = argparse.Namespace(
+            host="x", port=8080, timeout=5.0, json=False,
+            n=2, gradient=False, solid=True, zones="downlamp",
+            punch=False, sort=False, preview=False, shuffle=False, seed=None,
+        )
+        with patch("pyrava.__main__.dominant_colors",
+                   return_value=[(255, 0, 0), (0, 255, 0)]):
+            rc = cli_module().cmd_screen(args)
+    finally:
+        cli_module()._connect = original
+    assert rc == 0
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    assert len([l for l in lines if "SET_RGB" in l]) == 2  # BOTTOM_INNER + OUTER
+
+
+def test_screen_solid_and_gradient_are_mutually_exclusive():
+    from pyrava.__main__ import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["screen", "--solid", "--gradient"])
+
+
+def test_screen_n_flag_controls_sample_count():
+    import argparse
+    from unittest.mock import patch
+
+    args = argparse.Namespace(
+        host=None, port=8080, timeout=5.0, json=False,
+        n=7, gradient=False, solid=True, zones=None,
+        punch=False, sort=False, preview=True, shuffle=False, seed=None,
+        )
+    with patch("pyrava.__main__.dominant_colors", return_value=[(1, 1, 1)] * 7) as m:
+        cli_module().cmd_screen(args)
+    m.assert_called_once_with(7)
+
+
+def cli_module():
+    from pyrava import __main__ as cli
+    return cli
+
+
+# --------------------------------------------------- screen sampling flags
+
+def _run_screen(**overrides):
+    """Run cmd_screen in --preview mode, returning the sample count asked for."""
+    import argparse
+    from unittest.mock import patch
+
+    from pyrava import __main__ as cli
+
+    defaults = dict(
+        host=None, port=8080, timeout=5.0, json=False,
+        n=None, gradient=False, solid=True, zones=None,
+        punch=True, sort=False, preview=True, shuffle=False, seed=None,
+    )
+    defaults.update(overrides)
+    args = argparse.Namespace(**defaults)
+
+    seen = {}
+
+    def fake_dominant(count):
+        seen["n"] = count
+        return [(200, 100, 50)] * count
+
+    with patch("pyrava.__main__.dominant_colors", side_effect=fake_dominant):
+        with patch("builtins.print"):
+            rc = cli.cmd_screen(args)
+    assert rc == 0
+    return seen["n"]
+
+
+def test_screen_solid_samples_one_colour_per_zone():
+    """Sampling more colours than zones silently discards the extras."""
+    assert _run_screen() == 5                      # all five zones
+    assert _run_screen(zones="lava_lamp") == 3
+    assert _run_screen(zones="downlamp") == 2
+    assert _run_screen(zones=4) == 1
+
+
+def test_screen_gradient_uses_a_flat_default():
+    """Gradient stops blend across a zone, so there's no zone correspondence."""
+    assert _run_screen(gradient=True, solid=False) == 3
+    assert _run_screen(gradient=True, solid=False, zones="downlamp") == 3
+
+
+def test_screen_explicit_n_overrides_the_adaptive_default():
+    assert _run_screen(n=7) == 7
+    assert _run_screen(n=2, zones="lava_lamp") == 2
+
+
+def test_screen_punch_defaults_on():
+    from pyrava.__main__ import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["screen"]).punch is True
+    assert parser.parse_args(["screen", "--no-punch"]).punch is False
+
+
+def test_screen_solid_and_gradient_are_mutually_exclusive():
+    from pyrava.__main__ import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["screen", "--solid", "--gradient"])
+
+
+def test_screen_solid_is_the_default_mode():
+    from pyrava.__main__ import build_parser
+
+    args = build_parser().parse_args(["screen"])
+    assert args.gradient is False
+
+
+def test_resolve_zone_count_expands_groups_and_dedupes():
+    from pyrava.__main__ import _resolve_zone_count
+
+    assert len(_resolve_zone_count(None)) == 5
+    assert len(_resolve_zone_count("lava_lamp")) == 3
+    # A group plus one of its own members must not double-count.
+    assert len(_resolve_zone_count(["lava_lamp", 4])) == 3
+
+
+# ------------------------------------------------------- screen shuffling
+
+_SHUFFLE_PALETTE = [
+    (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
+    (255, 0, 255), (0, 255, 255), (255, 128, 0), (128, 0, 255),
+]
+
+
+def _screen_colors(**overrides):
+    """Run cmd_screen in preview mode, returning the colours it would send."""
+    import argparse
+    from unittest.mock import patch
+
+    from pyrava import __main__ as cli
+
+    defaults = dict(
+        host=None, port=8080, timeout=5.0, json=False, n=None,
+        gradient=False, solid=True, zones=None, punch=False,
+        sort=False, preview=True, shuffle=True, seed=None,
+    )
+    defaults.update(overrides)
+    args = argparse.Namespace(**defaults)
+
+    captured = {}
+
+    def grab(colors, **kw):
+        captured["colors"] = list(colors)
+        return ""
+
+    with patch("pyrava.__main__.dominant_colors",
+               side_effect=lambda c: _SHUFFLE_PALETTE[:c]):
+        with patch("pyrava.__main__.format_palette", side_effect=grab):
+            with patch("builtins.print"):
+                cli.cmd_screen(args)
+    return captured["colors"]
+
+
+def test_shuffle_varies_the_result_across_runs():
+    runs = {tuple(_screen_colors(n=8)) for _ in range(12)}
+    assert len(runs) > 1
+
+
+def test_no_shuffle_is_stable_and_dominant_first():
+    a = _screen_colors(n=8, shuffle=False)
+    b = _screen_colors(n=8, shuffle=False)
+    assert a == b
+    assert a == _SHUFFLE_PALETTE[:5]  # most dominant first, truncated to zones
+
+
+def test_seed_makes_the_shuffle_reproducible():
+    a = _screen_colors(n=8, seed=42)
+    b = _screen_colors(n=8, seed=42)
+    assert a == b
+    # A different seed should generally differ.
+    assert any(_screen_colors(n=8, seed=s) != a for s in (1, 2, 3, 7))
+
+
+def test_solid_mode_truncates_to_the_zone_count():
+    assert len(_screen_colors(n=8)) == 5
+    assert len(_screen_colors(n=8, zones="lava_lamp")) == 3
+    assert len(_screen_colors(n=8, zones="downlamp")) == 2
+
+
+def test_gradient_mode_keeps_every_sampled_colour():
+    """Stops blend across a zone, so there's nothing to truncate to."""
+    assert len(_screen_colors(n=8, gradient=True, solid=False)) == 8
+
+
+def test_shuffle_still_varies_the_subset_under_sort():
+    """Truncation must happen before sorting. Sorting the full list first
+    would deterministically promote the same colours and cancel the
+    shuffle out entirely."""
+    runs = {tuple(_screen_colors(n=8, sort=True)) for _ in range(15)}
+    assert len(runs) > 1
+
+
+def test_sorted_output_is_actually_hue_ordered():
+    import colorsys
+
+    colors = _screen_colors(n=8, sort=True, seed=5)
+    hues = [colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[0] for rgb in colors]
+    assert hues == sorted(hues)
+
+
+def test_shuffle_defaults_on_with_an_opt_out():
+    from pyrava.__main__ import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["screen"]).shuffle is True
+    assert parser.parse_args(["screen", "--no-shuffle"]).shuffle is False
+    assert parser.parse_args(["screen", "--seed", "7"]).seed == 7

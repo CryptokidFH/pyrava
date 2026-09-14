@@ -6,6 +6,7 @@ import argparse
 import colorsys
 import json
 import logging
+import random
 import sys
 import time
 from typing import Any
@@ -374,16 +375,48 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_zones_arg(text: str | int | None) -> int | str | None:
+    """Resolve a --zones CLI value: a bare digit is a zone index, otherwise
+    a group name. Without this, ``--zones 4`` looked up the group name "4"
+    and failed rather than targeting zone 4. Already-int values pass through,
+    so callers other than argparse can hand this a zone directly."""
+    if text is None or isinstance(text, int):
+        return text
+    return int(text) if text.isdigit() else text
+
+
 def cmd_screen(args: argparse.Namespace) -> int:
     """Sample screen colours and push them to the lamp."""
+    zones = _parse_zones_arg(args.zones)
+    zone_count = len(_resolve_zone_count(zones))
+
+    # In solid mode each zone shows exactly one colour. Sampling *more* than
+    # there are zones is useful though: --shuffle then picks a different
+    # subset each run, so you can re-roll the same screen capture until you
+    # like the result. Default to one per zone; raise --n for more variety.
+    n = args.n
+    if n is None:
+        n = 3 if args.gradient else zone_count
+
     try:
-        colors = dominant_colors(args.n)
+        colors = dominant_colors(n)
     except ImportError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     if args.punch:
         colors = [punch_color(c) for c in colors]
+
+    if args.shuffle:
+        rng = random.Random(args.seed)  # seed=None -> different every run
+        rng.shuffle(colors)
+
+    # Truncate before sorting, not after. set_zone_palette drops anything
+    # past the zone count, so sorting the full list first would always
+    # promote the same colours and cancel the shuffle out.
+    if not args.gradient and len(colors) > zone_count:
+        colors = colors[:zone_count]
+
     if args.sort:
         colors = sort_by_hue(colors)
 
@@ -394,14 +427,32 @@ def cmd_screen(args: argparse.Namespace) -> int:
 
     device = _connect(args)
     if args.gradient:
-        device.set_gradient(colors, zones=args.zones) if args.zones \
-            else device.set_gradient(colors)
+        if zones is not None:
+            device.set_gradient(colors, zones=zones)
+        else:
+            device.set_gradient(colors)
         print("gradient sent")
     else:
-        device.set_zone_palette(colors, zones=args.zones) if args.zones \
-            else device.set_zone_palette(colors)
+        if zones is not None:
+            device.set_zone_palette(colors, zones=zones)
+        else:
+            device.set_zone_palette(colors)
         print("palette sent")
     return 0
+
+
+def _resolve_zone_count(zones: Any) -> tuple[int, ...]:
+    """Expand a --zones argument to the actual zone indices it covers."""
+    from .client import ZONE_ORDER, _expand_zone_key
+
+    if zones is None:
+        return tuple(int(z) for z in ZONE_ORDER)
+    keys = zones if isinstance(zones, (list, tuple)) else [zones]
+    out: list[int] = []
+    for key in keys:
+        out.extend(_expand_zone_key(key))
+    seen: set[int] = set()
+    return tuple(z for z in out if not (z in seen or seen.add(z)))
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -498,11 +549,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("screen", parents=[common],
                        help="sample screen colours onto the lamp")
-    p.add_argument("--n", type=int, default=5, help="colours to sample")
-    p.add_argument("--gradient", action="store_true",
-                   help="blend the colours instead of one flat colour per zone")
-    p.add_argument("--zones", help="zone index or group name")
-    p.add_argument("--punch", action="store_true", help="boost saturation")
+    p.add_argument("--n", type=int, default=None,
+                   help="colours to sample; defaults to one per target zone "
+                        "in solid mode, 3 for --gradient")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--solid", action="store_true",
+                       help="one flat colour per zone (default)")
+    mode.add_argument("--gradient", action="store_true",
+                       help="blend the colours instead of one flat colour per zone")
+    p.add_argument("--zones", help="zone index (e.g. 4) or group name (e.g. lava_lamp)")
+    p.add_argument("--punch", dest="punch", action="store_true", default=True,
+                   help="boost saturation (default; screen-sampled colours "
+                        "are usually muted enough to read washed out)")
+    p.add_argument("--no-punch", dest="punch", action="store_false",
+                   help="send the sampled colours exactly as captured")
+    p.add_argument("--shuffle", dest="shuffle", action="store_true", default=True,
+                   help="randomise which colour lands on which zone (default). "
+                        "With --n above the zone count, each run also picks a "
+                        "different subset, so you can re-roll until you like it")
+    p.add_argument("--no-shuffle", dest="shuffle", action="store_false",
+                   help="keep the sampled order, most dominant colour first")
+    p.add_argument("--seed", type=int, default=None,
+                   help="seed the shuffle, to reproduce a run you liked")
     p.add_argument("--sort", action="store_true",
                    help="order by hue; helps gradients avoid muddy blends")
     p.add_argument("--preview", action="store_true",

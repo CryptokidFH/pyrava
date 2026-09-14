@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.7.1 (unreleased)
+
+### Added
+
+- `pyrava screen` shuffles sampled colours by default, so re-running
+  rearranges the same capture. With `--n` above the target zone count the
+  extras are dropped, so each run also picks a different *subset* -- a
+  re-roll for when you don't like what landed. `--no-shuffle` keeps the
+  sampled order (most dominant first) and `--seed N` reproduces a run.
+- Truncation to the zone count happens between the shuffle and `--sort`.
+  Sorting the full sample first would deterministically promote the same
+  colours and cancel the shuffle out; this way the shuffle chooses the
+  subset and the sort arranges it.
+
+## 0.7.0 (unreleased)
+
+### Changed
+
+- `pyrava screen`: `--n` now defaults to one colour per *target* zone in
+  solid mode instead of a flat 5. `--zones lava_lamp` previously sampled
+  five dominant colours for three zones and silently discarded two; it now
+  samples three. Gradients keep a flat default of 3, since stops blend
+  across a zone and have no per-zone correspondence. An explicit `--n`
+  overrides either.
+- `--punch` now defaults on for `screen`, with `--no-punch` to opt out.
+  Screen-sampled colours are usually muted enough to read washed out on the
+  diffused LEDs, and solid-plus-punch is the combination that looks best in
+  practice.
+- `_parse_zones_arg()` accepts an already-int zone, not just an argparse
+  string, so non-CLI callers can pass a zone directly.
+
 ## 0.6.2 (unreleased)
 
 ### Fixed

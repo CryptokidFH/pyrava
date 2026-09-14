@@ -285,10 +285,21 @@ light.set_zone_palette(dominant_colors(5))
 Or from the shell:
 
 ```bash
-pyrava screen --host 192.168.1.249 --punch          # flat colour per zone
-pyrava screen --host 192.168.1.249 --gradient --sort
+pyrava screen --host 192.168.1.249 --punch          # flat colour per zone (default)
+pyrava screen --host 192.168.1.249 --solid --zones lava_lamp --n 3
+pyrava screen --host 192.168.1.249 --gradient --sort --zones 4
 pyrava screen --preview                              # swatches, send nothing
 ```
+
+| Flag | Effect |
+| --- | --- |
+| `--n` | colours to sample (default 5) |
+| `--solid` | one flat colour per zone -- the default; exists for `--help` clarity |
+| `--gradient` | blend the colours instead; mutually exclusive with `--solid` |
+| `--zones` | a zone index (`4`) or group name (`lava_lamp`); default = all zones |
+| `--punch` | boost saturation |
+| `--sort` | order by hue, before gradients or assignment |
+| `--preview` | print swatches, send nothing |
 
 `dominant_colors()` uses Pillow's median-cut quantiser rather than k-means,
 which keeps this to one dependency instead of pulling in numpy and
