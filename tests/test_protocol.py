@@ -679,7 +679,7 @@ def test_cli_parser_builds_every_subcommand():
     from pyrava.__main__ import build_parser
 
     parser = build_parser()
-    for command in ["discover", "info", "heater", "set", "raw", "watch", "doctor"]:
+    for command in ["discover", "info", "heater", "set", "raw", "watch", "doctor", "screen"]:
         args = parser.parse_args([command] if command != "raw" else [command, "DVIFO"])
         assert callable(args.func)
 
@@ -2038,3 +2038,72 @@ def test_watch_plain_fallback_has_no_escape_codes():
 
     full_output = "\n".join(captured["out"])
     assert "\033[" not in full_output
+
+
+def test_cmd_screen_preview_runs_without_a_device():
+    """Regression: dominant_colors/format_palette/sort_by_hue were used in
+    cmd_screen but only swatch was imported, so every invocation raised
+    NameError. --preview exits before touching a device, so this exercises
+    the full function body -- imports, punch, sort, print -- with nothing
+    mocked but the colour source itself."""
+    import argparse
+    from unittest.mock import patch
+
+    from pyrava import __main__ as cli
+
+    args = argparse.Namespace(
+        host=None, port=8080, timeout=5.0, json=False,
+        n=3, gradient=False, zones=None, punch=True, sort=True, preview=True,
+    )
+    with patch("pyrava.__main__.dominant_colors",
+               return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
+        rc = cli.cmd_screen(args)
+    assert rc == 0
+
+
+def test_cmd_screen_missing_pillow_gives_a_clean_error(capsys):
+    import argparse
+    from unittest.mock import patch
+
+    from pyrava import __main__ as cli
+
+    args = argparse.Namespace(
+        host=None, port=8080, timeout=5.0, json=False,
+        n=3, gradient=False, zones=None, punch=False, sort=False, preview=True,
+    )
+    with patch("pyrava.__main__.dominant_colors",
+               side_effect=ImportError('screen sampling needs Pillow: pip install "pyrava[screen]"')):
+        rc = cli.cmd_screen(args)
+    assert rc == 1
+    assert "Pillow" in capsys.readouterr().err
+
+
+def test_every_name_cmd_screen_references_is_actually_importable():
+    """Static guard against the specific failure mode here: a name used in
+    cmd_screen but never imported at module scope. Catches it even for
+    branches --preview doesn't reach (the non-preview send path)."""
+    import ast
+    import builtins
+    import inspect
+
+    from pyrava import __main__ as cli
+
+    src = inspect.getsource(cli.cmd_screen)
+    tree = ast.parse(src)
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    local_names = {
+        n.arg for n in ast.walk(tree) if isinstance(n, ast.arg)
+    } | {
+        t.id for node in ast.walk(tree) if isinstance(node, ast.Assign)
+        for t in node.targets if isinstance(t, ast.Name)
+    } | {
+        node.target.id for node in ast.walk(tree)
+        if isinstance(node, ast.comprehension) and isinstance(node.target, ast.Name)
+    } | {"exc"}  # except ... as exc
+    missing = [
+        n for n in used
+        if n not in local_names
+        and n not in vars(cli)
+        and not hasattr(builtins, n)
+    ]
+    assert not missing, f"cmd_screen references undefined names: {missing}"

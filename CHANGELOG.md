@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.2 (unreleased)
+
+### Fixed
+
+- `pyrava screen` raised `NameError: dominant_colors is not defined` on
+  every invocation. The 0.6.0 CLI import only added `swatch`, while
+  `cmd_screen` also calls `dominant_colors()`, `format_palette()`, and
+  `sort_by_hue()`. All four are now imported. Added a test that actually
+  invokes `cmd_screen` (the existing subcommand test only checked the
+  parser, never called the function) and a static check that every name
+  the function references resolves at import time, to catch this class of
+  bug regardless of which branch a future change touches.
+
 ## 0.6.1 (unreleased)
 
 ### Added

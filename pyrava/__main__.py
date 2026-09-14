@@ -18,7 +18,7 @@ from .client import (
     punch_color,
 )
 from .const import Handler, Var
-from .palette import swatch
+from .palette import dominant_colors, format_palette, sort_by_hue, swatch
 from .errors import BaravaError, DiscoveryError, TransportError
 
 
