@@ -2449,14 +2449,18 @@ def test_saturation_filter_falls_back_when_too_little_survives():
     assert len(set(out)) >= 1
 
 
-def test_min_saturation_zero_keeps_everything():
+def test_min_saturation_zero_admits_desaturated_candidates():
+    """With both filters off, greys become eligible again. min_value still
+    excludes near-black separately, so drop that too."""
     pytest.importorskip("PIL")
 
     from pyrava import dominant_colors
 
-    out = dominant_colors(4, image=_screenish_image(), scale=1.0,
-                          min_saturation=0.0)
-    assert (32, 34, 38) in out  # the grey is back
+    strict = dominant_colors(4, image=_screenish_image(), scale=1.0)
+    loose = dominant_colors(4, image=_screenish_image(), scale=1.0,
+                            min_saturation=0.0, min_value=0.0)
+    assert (200, 202, 205) in loose or (32, 34, 38) in loose
+    assert (200, 202, 205) not in strict
 
 
 def test_cli_min_sat_flag_defaults_to_the_filter():
@@ -2483,3 +2487,126 @@ def test_cli_passes_min_sat_through_to_the_sampler():
         with patch("builtins.print"):
             cli.cmd_screen(args)
     m.assert_called_once_with(3, min_saturation=0.5)
+
+
+# ------------------------------------------------ palette diversity
+
+def _dominant_cluster_image():
+    """One huge dark cluster plus a few small vivid regions -- the shape of
+    a real desktop with a dark theme, which is what broke plain median-cut."""
+    from PIL import Image
+
+    img = Image.new("RGB", (200, 100))
+    px = img.load()
+    for x in range(200):
+        for y in range(100):
+            if x < 170:
+                # 85% dark navy, slightly varied so median-cut can split it
+                px[x, y] = (30 + (x % 6), 25 + (y % 5), 52 + (x % 7))
+            elif x < 180:
+                px[x, y] = (255, 40, 200)   # magenta accent
+            elif x < 190:
+                px[x, y] = (0, 220, 220)    # cyan accent
+            else:
+                px[x, y] = (255, 160, 0)    # amber accent
+    return img
+
+
+def test_diverse_selection_escapes_the_dominant_cluster():
+    """Plain median-cut subdivides by population, so on a screen dominated
+    by one colour every entry lands inside it and the lamp shows one flat
+    colour repeated. The diverse path must spread across hues instead."""
+    pytest.importorskip("PIL")
+    import colorsys
+
+    from pyrava import dominant_colors
+
+    img = _dominant_cluster_image()
+
+    plain = dominant_colors(5, image=img, scale=1.0, diverse=False)
+    spread = dominant_colors(5, image=img, scale=1.0)
+
+    def hue_span(colors):
+        hues = sorted(
+            colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[0] * 360
+            for rgb in colors
+        )
+        return max(hues) - min(hues)
+
+    assert hue_span(spread) > hue_span(plain)
+
+
+def test_diverse_selection_returns_distinct_colours():
+    """The reported symptom was three colours differing by a couple of RGB
+    units, indistinguishable on the lamp."""
+    pytest.importorskip("PIL")
+
+    from pyrava import dominant_colors
+
+    colors = dominant_colors(5, image=_dominant_cluster_image(), scale=1.0)
+    assert len(set(colors)) == len(colors)
+
+    # No two returned colours should be near-identical.
+    for i, a in enumerate(colors):
+        for b in colors[i + 1:]:
+            manhattan = sum(abs(x - y) for x, y in zip(a, b))
+            assert manhattan > 12, f"{a} and {b} are effectively the same"
+
+
+def test_diverse_selection_prefers_vivid_over_murky():
+    pytest.importorskip("PIL")
+    import colorsys
+
+    from pyrava import dominant_colors
+
+    img = _dominant_cluster_image()
+    plain = dominant_colors(5, image=img, scale=1.0, diverse=False)
+    spread = dominant_colors(5, image=img, scale=1.0)
+
+    def avg_val(colors):
+        return sum(
+            colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[2] for rgb in colors
+        ) / len(colors)
+
+    assert avg_val(spread) > avg_val(plain)
+
+
+def test_diverse_false_restores_population_ordering():
+    pytest.importorskip("PIL")
+
+    from pyrava import dominant_colors
+
+    img = _dominant_cluster_image()
+    plain = dominant_colors(4, image=img, scale=1.0, diverse=False)
+    # The dominant navy should come first when ordering by coverage.
+    assert plain[0][2] > plain[0][1]  # blue-ish channel dominant
+
+
+def test_diverse_handles_degenerate_images():
+    """Must not crash or return duplicates on pathological input."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from pyrava import dominant_colors
+
+    black = Image.new("RGB", (40, 40), (0, 0, 0))
+    assert dominant_colors(3, image=black, scale=1.0)
+
+    grey = Image.new("RGB", (80, 40), (128, 128, 130))
+    grey.load()[0, 0] = (255, 0, 0)
+    out = dominant_colors(5, image=grey, scale=1.0)
+    assert out
+    assert len(set(out)) == len(out)
+
+
+def test_min_value_filters_near_black():
+    pytest.importorskip("PIL")
+    import colorsys
+
+    from pyrava import dominant_colors
+
+    colors = dominant_colors(4, image=_dominant_cluster_image(), scale=1.0,
+                             min_value=0.5)
+    for rgb in colors:
+        v = colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[2]
+        assert v >= 0.45  # allow a little slack for quantisation

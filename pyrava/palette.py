@@ -92,6 +92,8 @@ def dominant_colors(
     *,
     scale: float = 0.15,
     min_saturation: float = 0.35,
+    min_value: float = 0.15,
+    diverse: bool = True,
     image=None,
 ) -> list[tuple[int, int, int]]:
     """Sample the dominant colours of the screen (or a supplied image).
@@ -103,19 +105,28 @@ def dominant_colors(
     Pillow's median-cut, which is fast and avoids depending on numpy and
     scikit-learn for what is essentially palette extraction.
 
-    ``min_saturation`` (0-1) drops washed-out pixels *before* quantising,
-    and it matters more than any post-hoc boost. A typical screen is mostly
-    desaturated UI chrome, so without it the dominant colours are greys --
-    and boosting the saturation of a grey leaves it grey, since 1.5x of
-    almost nothing is still almost nothing. The 0.35 default matches what
-    works in practice. If too few pixels survive the filter, the unfiltered
-    image is used rather than returning near-duplicates, so raising this on
-    a muted screen degrades gracefully.
+    Straight median-cut is a poor fit for lighting. It subdivides by pixel
+    population, so on a screen dominated by one colour -- a dark editor
+    theme, say -- every palette entry lands inside that one cluster and you
+    get several colours differing by a couple of RGB units, which shows up
+    on the lamp as one flat colour repeated. ``diverse`` (on by default)
+    fixes that: it quantises to a larger pool, discards anything too dark or
+    washed out, then greedily picks entries that are far apart in hue,
+    breaking ties toward the more vivid ones.
 
-    ``scale`` shrinks the grab before quantising -- the default trades
-    precision for speed and is plenty for five colours. ``image`` accepts a
-    ``PIL.Image`` instead of grabbing the screen, which is handy for tests
-    and for sampling a file.
+    ``min_saturation`` drops washed-out pixels *before* quantising, and
+    ``min_value`` drops near-black ones during selection. Both matter more
+    than any post-hoc boost, since brightening or saturating a dark grey
+    just gives a lighter grey. If fewer than ``n_colors`` clear the filters,
+    **fewer colours are returned** rather than padding the result with murky
+    ones -- three vivid colours cycled across five zones looks better than
+    three vivid and two muddy. The filters are only relaxed if nothing at
+    all survives them.
+
+    ``scale`` shrinks the grab before quantising. ``image`` accepts a
+    ``PIL.Image`` instead of grabbing the screen, handy for tests and for
+    sampling a file. Set ``diverse=False`` for plain population-ordered
+    median-cut.
     """
     try:
         from PIL import Image, ImageGrab
@@ -158,15 +169,79 @@ def dominant_colors(
             filtered.putdata(kept)
             img = filtered
 
-    quantised = img.quantize(colors=n_colors, method=Image.Quantize.MEDIANCUT)
-    palette = quantised.getpalette()[: n_colors * 3]
-    colors = [
+    if not diverse:
+        quantised = img.quantize(colors=n_colors, method=Image.Quantize.MEDIANCUT)
+        palette = quantised.getpalette()[: n_colors * 3]
+        colors = [
+            (palette[i], palette[i + 1], palette[i + 2])
+            for i in range(0, len(palette), 3)
+        ]
+        # Order by how much of the image each colour covers, most first.
+        counts = sorted(quantised.getcolors() or [], reverse=True)
+        if counts and len(counts) == len(colors):
+            colors = [colors[idx] for _count, idx in counts]
+        return colors[:n_colors]
+
+    # Quantise to a larger pool than we need, so there are candidates
+    # outside the dominant cluster to choose between.
+    pool = max(n_colors * 8, 32)
+    quantised = img.quantize(colors=pool, method=Image.Quantize.MEDIANCUT)
+    palette = quantised.getpalette()[: pool * 3]
+    candidates = [
         (palette[i], palette[i + 1], palette[i + 2])
         for i in range(0, len(palette), 3)
     ]
 
-    # Order by how much of the image each colour covers, most first.
-    counts = sorted(quantised.getcolors() or [], reverse=True)
-    if counts and len(counts) == len(colors):
-        colors = [colors[idx] for _count, idx in counts]
-    return colors[:n_colors]
+    def _hsv(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
+        h, s, v = colorsys.rgb_to_hsv(*[c / 255 for c in rgb])
+        return h * 360, s, v
+
+    def _score(rgb: tuple[int, int, int]) -> tuple[tuple[int, int, int], float, float]:
+        hue, sat, val = _hsv(rgb)
+        return rgb, hue, sat * val
+
+    scored = [
+        _score(rgb) for rgb in candidates
+        if _hsv(rgb)[1] >= min_saturation and _hsv(rgb)[2] >= min_value
+    ]
+    if not scored:
+        # Nothing at all clears the filters -- an all-dark or all-grey
+        # screen. Relax rather than returning nothing.
+        scored = [_score(rgb) for rgb in candidates if _hsv(rgb)[2] >= min_value]
+    if not scored:
+        scored = [_score(rgb) for rgb in candidates]
+    if not scored:
+        return candidates[:n_colors]
+
+    # Greedy farthest-hue selection, seeded with the most vivid entry.
+    # Candidates too close to something already chosen are skipped outright:
+    # the whole point is that each zone reads as a different colour, and two
+    # navies ten RGB units apart are indistinguishable on the lamp. If that
+    # exhausts the candidates we return fewer colours, which set_zone_palette
+    # cycles.
+    min_gap = 40  # Manhattan distance in RGB
+
+    def too_close(rgb: tuple[int, int, int]) -> bool:
+        return any(
+            sum(abs(x - y) for x, y in zip(rgb, c[0])) < min_gap for c in chosen
+        )
+
+    scored.sort(key=lambda t: -t[2])
+    chosen = [scored[0]]
+    while len(chosen) < n_colors:
+        best, best_score = None, -1.0
+        for cand in scored:
+            if cand in chosen or too_close(cand[0]):
+                continue
+            gap = min(
+                min(abs(cand[1] - c[1]), 360 - abs(cand[1] - c[1]))
+                for c in chosen
+            )
+            # Distance dominates, vividness breaks ties.
+            score = gap * (0.5 + cand[2])
+            if score > best_score:
+                best_score, best = score, cand
+        if best is None:
+            break  # nothing left that's visibly different
+        chosen.append(best)
+    return [c[0] for c in chosen]

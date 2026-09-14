@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+### Fixed
+
+- `pyrava screen` returned several near-identical colours on a screen with
+  one dominant colour -- reported as three navies differing by a couple of
+  RGB units, which the lamp shows as one flat colour. Root cause: Pillow's
+  median-cut subdivides by pixel population, so when ~74% of the screen is
+  dark navy every palette entry lands inside that one cluster. The
+  saturation filter added in 0.7.2 could not help, because that navy is
+  itself saturated (0.38-0.59) -- it was the wrong axis.
+  - `dominant_colors()` now quantises to a pool 8x the requested size, drops
+    candidates below `min_saturation` or the new `min_value` (0.15), then
+    greedily selects for hue distance with vividness breaking ties.
+  - Candidates within 40 Manhattan RGB units of one already chosen are
+    skipped, so the result can never contain two colours that look the same
+    on the lamp. If that exhausts the pool, fewer colours are returned and
+    the zones cycle them.
+  - `diverse=False` restores the previous population-ordered median-cut.
+  - On the reported screenshot this turns `#1B1735 #1D1736 #1B1736` (all
+    value 0.21) into `#6900F4 #4A93EE #000AD4` (values 0.83-0.96).
+
 ## 0.7.2 (unreleased)
 
 ### Fixed

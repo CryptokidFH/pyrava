@@ -301,6 +301,16 @@ pyrava screen --preview                              # swatches, send nothing
 | `--sort` | order by hue, before gradients or assignment |
 | `--preview` | print swatches, send nothing |
 
+Selection is diversity-aware. Plain median-cut subdivides by pixel
+population, so a screen dominated by one colour — a dark editor theme, say —
+puts every palette entry inside that single cluster, and the lamp shows one
+flat colour repeated. Instead, `dominant_colors()` quantises to a larger
+pool, discards anything too dark or washed out, then greedily picks entries
+far apart in hue, skipping any that would be visually indistinguishable from
+one already chosen. If fewer than `--n` colours clear that bar you get fewer,
+which the zones cycle — three vivid colours beat three vivid and two muddy.
+`diverse=False` restores plain population-ordered median-cut.
+
 Colours below `--min-sat` (default 0.35) are dropped *before* sampling. This
 matters more than `--punch`: a typical screen is mostly grey UI chrome, so
 without the filter the dominant colours come back grey — and boosting the
