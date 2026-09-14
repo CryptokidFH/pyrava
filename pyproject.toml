@@ -36,12 +36,16 @@ dependencies = []
 [project.optional-dependencies]
 # mDNS discovery. Not needed if you connect by IP.
 discovery = ["zeroconf>=0.100"]
+# Screen sampling for pyrava.palette.dominant_colors(). Pillow only --
+# quantisation uses median-cut rather than k-means to avoid numpy/sklearn.
+screen = ["pillow>=9"]
 # Connection reuse; measurably lower latency at short ping intervals.
 fast = ["requests>=2.25"]
-all = ["zeroconf>=0.100", "requests>=2.25"]
+all = ["zeroconf>=0.100", "requests>=2.25", "pillow>=9"]
 dev = [
     "zeroconf>=0.100",
     "requests>=2.25",
+    "pillow>=9",
     "pytest>=7",
     "build>=1.0",
     "twine>=4.0",
@@ -51,9 +55,9 @@ dev = [
 pyrava = "pyrava.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/CryptokidFH/pyrava"
-Repository = "https://github.com/CryptokidFH/pyrava"
-Issues = "https://github.com/CryptokidFH/pyrava/issues"
+Homepage = "https://github.com/Calvin/pyrava"
+Repository = "https://github.com/Calvin/pyrava"
+Issues = "https://github.com/Calvin/pyrava/issues"
 
 [tool.setuptools.dynamic]
 version = { attr = "pyrava.__version__" }

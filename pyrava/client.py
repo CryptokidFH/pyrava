@@ -262,6 +262,13 @@ class BaravaDevice:
         self.sender_id = sender_id or new_sender_id()
         self._validate_sender_id(self.sender_id)
         self.ping_interval = int(ping_interval)
+        if self.ping_interval < MIN_PING_INTERVAL_MS:
+            log.warning(
+                "ping_interval=%d is below the %dms minimum for device "
+                "stability; the device may drop the session or become "
+                "unstable.",
+                self.ping_interval, MIN_PING_INTERVAL_MS,
+            )
         self.name = name
         self.transport = transport or HttpTransport(
             host, port, timeout=timeout, envelope=envelope
@@ -272,7 +279,6 @@ class BaravaDevice:
         self.reported_ping_interval: int | None = None
         self.follow_device_interval = follow_device_interval
         self._warned_unregistered_batch = False
-        self._warned_low_interval = False
         #: Minimum seconds between animation uploads; see upload_animation().
         self.min_animation_gap: float = DEFAULT_MIN_ANIMATION_GAP_S
         self._last_animation_upload: float | None = None
@@ -377,26 +383,19 @@ class BaravaDevice:
         if batch.ping_interval:
             self.reported_ping_interval = batch.ping_interval
             if self.follow_device_interval:
-                # Firmware 1.0.1 advertises 200ms, below the 500ms floor in
-                # `barava_network_impl.md`. Following it verbatim would ping
-                # 2.5x faster than the vendor says is safe for device
-                # stability, so the floor wins.
+                # The device reports a value below the 500ms floor from
+                # `barava_network_impl.md` (200 on firmware 1.0.1). The
+                # firmware author has confirmed 500 is the real minimum, so
+                # clamping is routine rather than notable -- no warning. The
+                # raw value stays on reported_ping_interval if you want it.
+                self.ping_interval = max(
+                    MIN_PING_INTERVAL_MS, batch.ping_interval
+                )
                 if batch.ping_interval < MIN_PING_INTERVAL_MS:
-                    if not self._warned_low_interval:
-                        log.warning(
-                            "the device's key block reports %dms in the field "
-                            "we read as a ping interval, below the %dms minimum "
-                            "in the vendor's design notes; using %dms instead. "
-                            "If that field isn't actually the interval, pass "
-                            "follow_device_interval=False to ignore it.",
-                            batch.ping_interval,
-                            MIN_PING_INTERVAL_MS,
-                            MIN_PING_INTERVAL_MS,
-                        )
-                        self._warned_low_interval = True
-                    self.ping_interval = MIN_PING_INTERVAL_MS
-                else:
-                    self.ping_interval = batch.ping_interval
+                    log.debug(
+                        "device reported %dms; clamped to the %dms floor",
+                        batch.ping_interval, MIN_PING_INTERVAL_MS,
+                    )
 
     def ping(self) -> Batch:
         """Pop the response queue without issuing a command."""
@@ -1119,10 +1118,14 @@ class BaravaDevice:
         chosen = interval if interval is not None else self.ping_interval / 1000.0
         floor = MIN_PING_INTERVAL_MS / 1000.0
         if enforce_interval_floor and chosen < floor:
-            log.warning(
-                "poll interval %.3fs is below the %.3fs minimum in the "
-                "vendor's design notes; using %.3fs.", chosen, floor, floor
-            )
+            # Only worth flagging when the caller asked for this. A derived
+            # value can't be under the floor (ping_interval is already
+            # clamped), so reaching here with interval=None would be a bug.
+            if interval is not None:
+                log.warning(
+                    "requested poll interval %.3fs is below the %.3fs minimum "
+                    "for device stability; using %.3fs.", chosen, floor, floor
+                )
             chosen = floor
         session = PollingSession(
             self,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import colorsys
 import json
 import logging
 import sys
@@ -10,8 +11,14 @@ import time
 from typing import Any
 
 from . import __version__
-from .client import BaravaDevice, describe_heater_health, discover_devices
+from .client import (
+    BaravaDevice,
+    describe_heater_health,
+    discover_devices,
+    punch_color,
+)
 from .const import Handler, Var
+from .palette import swatch
 from .errors import BaravaError, DiscoveryError, TransportError
 
 
@@ -224,19 +231,49 @@ def cmd_raw(args: argparse.Namespace) -> int:
     return 0
 
 
-def _fmt_bool(value: Any, labels: tuple[str, str] = ("on", "off")) -> str:
+#: SGR codes for the handful of colors watch uses. Kept to widely-supported
+#: basic codes (not 256-color/truecolor) since these are for text, not the
+#: swatch chip -- that already uses truecolor via pyrava.palette.swatch.
+_SGR = {"red": 31, "green": 32, "yellow": 33, "cyan": 36, "dim": 2, "bold": 1}
+
+
+def _c(text: str, *colors: str, enabled: bool) -> str:
+    """Wrap text in ANSI SGR codes, or return it plain if not enabled."""
+    if not enabled or not colors:
+        return text
+    codes = ";".join(str(_SGR[c]) for c in colors)
+    return f"\033[{codes}m{text}\033[0m"
+
+
+def _fmt_bool(value: Any, labels: tuple[str, str] = ("on", "off"), *, color: bool = False) -> str:
     if value is None:
         return "?"
-    return labels[0] if int(value) else labels[1]
+    on = bool(int(value))
+    text = labels[0] if on else labels[1]
+    return _c(text, "green" if on else "dim", enabled=color)
 
 
-def _fmt_color(value: Any) -> str:
+def _fmt_color(value: Any, *, swatch_chip: bool = False) -> str:
+    """Format FCLR, a hue in degrees -- not a packed colour, despite the name.
+
+    An earlier version of this formatter rendered the raw int as ``#XXXXXX``
+    hex, which looked like a colour but was actually just the hue number
+    misread as one. This shows the actual hue, plus an approximate preview
+    swatch at full saturation/value (the real saturation and brightness
+    aren't part of this field, so the swatch is illustrative, not exact).
+    """
     if value is None:
         return "?"
     try:
-        return f"#{int(value):06X}"
+        hue = int(value)
     except (TypeError, ValueError):
         return str(value)
+    label = f"{hue}\N{DEGREE SIGN}"
+    if swatch_chip:
+        r, g, b = colorsys.hsv_to_rgb(hue / 360, 1.0, 1.0)
+        chip = swatch((round(r * 255), round(g * 255), round(b * 255)), width=2)
+        return f"{label} {chip}"
+    return label
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -275,17 +312,18 @@ def cmd_watch(args: argparse.Namespace) -> int:
     }
     last_update = {"at": None}
     redraw = _Redraw()
+    use_color = redraw.ansi  # colour rides on the same terminal capability
 
     def render() -> None:
         header = f"watching {device.device_id or device.host}  (Ctrl-C to stop)"
         stamp = last_update["at"] or "--:--:--"
         redraw.render([
-            header,
-            "-" * len(header),
+            _c(header, "bold", "cyan", enabled=use_color),
+            _c("-" * len(header), "dim", enabled=use_color),
             f"device : {state['device']}",
             f"lights : {state['lights']}",
             f"heater : {state['heater']}",
-            f"updated: {stamp}",
+            _c(f"updated: {stamp}", "dim", enabled=use_color),
         ])
 
     def on_info(packet) -> None:
@@ -293,11 +331,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
         version = packet.get(Var.DEVICE_VERSION, "?")
         state["device"] = f"{name}  (firmware {version})"
         state["lights"] = (
-            f"power {_fmt_bool(packet.get(Var.DEVICE_STATE))}   "
-            f"fill {_fmt_bool(packet.get(Var.FILL_STATE))} "
-            f"{_fmt_color(packet.get(Var.FILL_COLOR))} "
+            f"power {_fmt_bool(packet.get(Var.DEVICE_STATE), color=use_color)}   "
+            f"fill {_fmt_bool(packet.get(Var.FILL_STATE), color=use_color)} "
+            f"{_fmt_color(packet.get(Var.FILL_COLOR), swatch_chip=use_color)} "
             f"bri {packet.get(Var.FILL_BRIGHTNESS, '?')}   "
-            f"desk {_fmt_bool(packet.get(Var.DESK_STATE))} "
+            f"desk {_fmt_bool(packet.get(Var.DESK_STATE), color=use_color)} "
             f"bri {packet.get(Var.DESK_BRIGHTNESS, '?')}"
         )
         last_update["at"] = time.strftime("%H:%M:%S")
@@ -309,9 +347,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
         status = describe_heater_health(packet.get(Var.HEATER_HEALTH))
         current_f = "?" if current is None else f"{current / 100:.2f}"
         target_f = "?" if target is None else f"{target / 100:.2f}"
+        status_color = (
+            "green" if status == "OK"
+            else "yellow" if status == "unknown"
+            else "red"  # "Fault" or "Fault (code N)"
+        )
         state["heater"] = (
             f"current {current_f}\N{DEGREE SIGN}F   "
-            f"target {target_f}\N{DEGREE SIGN}F   status {status}"
+            f"target {target_f}\N{DEGREE SIGN}F   "
+            f"status {_c(status, status_color, enabled=use_color)}"
         )
         last_update["at"] = time.strftime("%H:%M:%S")
         render()
@@ -327,6 +371,36 @@ def cmd_watch(args: argparse.Namespace) -> int:
     finally:
         session.stop()
         redraw.finish("stopped")
+    return 0
+
+
+def cmd_screen(args: argparse.Namespace) -> int:
+    """Sample screen colours and push them to the lamp."""
+    try:
+        colors = dominant_colors(args.n)
+    except ImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.punch:
+        colors = [punch_color(c) for c in colors]
+    if args.sort:
+        colors = sort_by_hue(colors)
+
+    print(format_palette(colors))
+    if args.preview:
+        print("\npreview only -- nothing sent")
+        return 0
+
+    device = _connect(args)
+    if args.gradient:
+        device.set_gradient(colors, zones=args.zones) if args.zones \
+            else device.set_gradient(colors)
+        print("gradient sent")
+    else:
+        device.set_zone_palette(colors, zones=args.zones) if args.zones \
+            else device.set_zone_palette(colors)
+        print("palette sent")
     return 0
 
 
@@ -421,6 +495,19 @@ def build_parser() -> argparse.ArgumentParser:
              "notes (0.5 is allowed for data polling like temperature)",
     )
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("screen", parents=[common],
+                       help="sample screen colours onto the lamp")
+    p.add_argument("--n", type=int, default=5, help="colours to sample")
+    p.add_argument("--gradient", action="store_true",
+                   help="blend the colours instead of one flat colour per zone")
+    p.add_argument("--zones", help="zone index or group name")
+    p.add_argument("--punch", action="store_true", help="boost saturation")
+    p.add_argument("--sort", action="store_true",
+                   help="order by hue; helps gradients avoid muddy blends")
+    p.add_argument("--preview", action="store_true",
+                   help="show the swatches without sending anything")
+    p.set_defaults(func=cmd_screen)
 
     p = sub.add_parser("doctor", help="diagnose mDNS discovery")
     p.add_argument("--timeout", type=float, default=6.0)

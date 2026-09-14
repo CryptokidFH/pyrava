@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.6.1 (unreleased)
+
+### Added
+
+- `pyrava watch` colours its output when the terminal supports it: green/dim
+  for on/off states, green/yellow/red for heater status, and a truecolour
+  swatch previewing the fill hue. Colour rides on the same terminal
+  capability check as the redraw itself, so a non-terminal or unsupported
+  console falls back to fully plain text -- verified with a test that
+  asserts zero escape codes reach output in that path.
+
+### Fixed
+
+- `watch`'s fill-colour display formatted `FCLR` as `#RRGGBB` hex, which
+  looked like a packed colour but was actually just the raw hue number
+  misread as one (`FCLR` is a hue in degrees, not packed RGB -- see the
+  0.1.5 fill-colour correction). Now shown as `204°` with an approximate
+  preview swatch, clearly labelled as illustrative since the field doesn't
+  carry the saturation/brightness the swatch assumes.
+
+## 0.6.0 (unreleased)
+
+### Added
+
+- `pyrava.palette`: colour previewing and screen sampling.
+  - `swatch()`, `format_palette()`, `print_palette()`, `sort_by_hue()` are
+    pure stdlib and always available -- previewing what you're about to send
+    is useful for anything driving these lights.
+  - `dominant_colors()` samples the screen, behind a new `screen` extra
+    (`pip install "pyrava[screen]"`). Uses Pillow's median-cut quantiser
+    rather than k-means, so the dependency is Pillow alone rather than
+    numpy + scikit-learn.
+  - New `pyrava screen` CLI command, with `--preview` to show swatches
+    without sending, and `--punch` / `--sort` / `--gradient` / `--zones`.
+
+### Changed
+
+- The sub-floor ping-interval warning now fires only when *you* explicitly
+  request an interval below 500ms, via `poll(interval=...)` or the
+  `ping_interval=` constructor argument. The device reporting 200 and being
+  clamped is routine (the firmware author confirmed 500 is the real floor)
+  and is now silent, logged at debug level only. `reported_ping_interval`
+  still exposes the raw value.
+
 ## 0.5.0 (unreleased)
 
 ### Added

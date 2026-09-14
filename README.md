@@ -14,6 +14,7 @@ pulls in nothing. Two optional extras:
 | Extra | Brings | Needed for |
 | --- | --- | --- |
 | `discovery` | `zeroconf` | `discover_devices()`; not needed if you connect by IP |
+| `screen` | `pillow` | `dominant_colors()` screen sampling |
 | `fast` | `requests` | connection reuse, lower latency at short ping intervals |
 
 Requires Python 3.8+.
@@ -35,9 +36,13 @@ machine-readable output.
 
 `pyrava watch` redraws a fixed status block in place rather than scrolling —
 device state, light state, and heater temperatures, refreshed as the device
-answers. Data appears from the second tick onward (replies are deferred by
-one ping; see below). `--json` switches to one JSON object per line instead,
-since a redrawn screen isn't machine-readable. Output that isn't a real
+answers, coloured when the terminal supports it: green/dim for on/off,
+green/yellow/red for heater status, and a truecolour swatch previewing the
+fill hue (approximate — `FCLR` is only a hue, so the swatch assumes full
+saturation and brightness, which the field doesn't actually carry). Data
+appears from the second tick onward (replies are deferred by one ping; see
+below). `--json` switches to one JSON object per line instead, since a
+redrawn screen isn't machine-readable. Output that isn't a real
 terminal (piped to a file, an unsupported console) falls back to plain
 scrolling automatically.
 
@@ -257,6 +262,42 @@ is `(Zone.TOP, Zone.MIDDLE_INNER, Zone.MIDDLE_OUTER, Zone.BOTTOM_INNER,
 Zone.BOTTOM_OUTER)`, the order the app selects them in a theme header.
 `examples/zone_probe.py` re-lights each ring by name, useful for a quick
 sanity check after a firmware update.
+
+### Previewing and sampling colours
+
+`pyrava.palette` has preview helpers with no dependencies at all -- seeing
+what you're about to send saves a lot of squinting at the lamp:
+
+```python
+from pyrava import print_palette, sort_by_hue
+
+print_palette(colors)          # ANSI swatches + hex, one line
+sort_by_hue(colors)            # order around the wheel
+```
+
+Screen sampling needs the `screen` extra (Pillow only):
+
+```python
+from pyrava import dominant_colors
+light.set_zone_palette(dominant_colors(5))
+```
+
+Or from the shell:
+
+```bash
+pyrava screen --host 192.168.1.249 --punch          # flat colour per zone
+pyrava screen --host 192.168.1.249 --gradient --sort
+pyrava screen --preview                              # swatches, send nothing
+```
+
+`dominant_colors()` uses Pillow's median-cut quantiser rather than k-means,
+which keeps this to one dependency instead of pulling in numpy and
+scikit-learn. If you already have a k-means palette from elsewhere, pass it
+straight to `set_zone_palette()` -- nothing here is required.
+
+`sort_by_hue()` matters mainly for gradients: sampled colours come back in
+arbitrary order, and adjacent stops with distant hues blend through muddy
+intermediates.
 
 ### One flat colour per zone
 

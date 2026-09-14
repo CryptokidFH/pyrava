@@ -868,7 +868,7 @@ def test_watch_command_populates_status_from_deferred_replies(monkeypatch):
             
         class _Capture:
             def __init__(self, ansi=None):
-                pass
+                self.ansi = bool(ansi)
 
             def render(self, lines):
                 captured["lines"] = lines
@@ -1018,7 +1018,7 @@ def test_cli_watch_shows_status_not_raw_code(monkeypatch):
 
     class _Capture:
         def __init__(self, ansi=None):
-            pass
+            self.ansi = bool(ansi)
 
         def render(self, lines):
             captured["lines"] = lines
@@ -1807,3 +1807,234 @@ def test_map_linear_does_not_warn(recwarn):
         script.select_zone(4)
         script.gradient((0, 255, 0, 0), (128, 0, 0, 255))
     assert not [w for w in recwarn if "blank the zone" in str(w.message)]
+
+
+# --------------------------------------------- interval warning behaviour
+
+def test_device_reported_sub_floor_interval_clamps_silently(caplog):
+    """The firmware author confirmed 500 is the real floor, so clamping the
+    device's reported 200 is routine -- not worth warning about."""
+    import logging
+
+    fake = _Replay()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    with caplog.at_level(logging.WARNING, logger="pyrava"):
+        device.get_device_info()
+    assert device.reported_ping_interval == 200
+    assert device.ping_interval == 500
+    assert not [r for r in caplog.records if "interval" in r.message]
+
+
+def test_explicit_sub_floor_poll_interval_warns(caplog):
+    import logging
+
+    fake = _Replay()
+    device = BaravaDevice("192.0.2.10", transport=fake)
+    with caplog.at_level(logging.WARNING, logger="pyrava"):
+        session = device.poll(interval=0.1)
+        session.stop()
+    assert any("below the" in r.message for r in caplog.records)
+
+
+def test_explicit_sub_floor_constructor_interval_warns(caplog):
+    import logging
+
+    fake = _Replay()
+    with caplog.at_level(logging.WARNING, logger="pyrava"):
+        BaravaDevice("192.0.2.10", transport=fake, ping_interval=200)
+    assert any("below the 500ms minimum" in r.message for r in caplog.records)
+
+
+def test_normal_interval_use_is_silent(caplog):
+    import logging
+
+    fake = _Replay()
+    with caplog.at_level(logging.WARNING, logger="pyrava"):
+        device = BaravaDevice("192.0.2.10", transport=fake)
+        session = device.poll()
+        session.stop()
+    assert not [r for r in caplog.records if "interval" in r.message]
+
+
+# ----------------------------------------------------------------- palette
+
+def test_swatch_emits_truecolour_escape():
+    from pyrava import swatch
+
+    out = swatch((255, 0, 0), width=2)
+    assert out.startswith("\033[48;2;255;0;0m")
+    assert out.endswith("\033[0m")
+    assert "  " in out
+
+
+def test_format_palette_shows_hex():
+    from pyrava import format_palette
+
+    out = format_palette([(255, 0, 0), (0, 128, 255)])
+    assert "#FF0000" in out
+    assert "#0080FF" in out
+
+
+def test_format_palette_can_omit_hex():
+    from pyrava import format_palette
+
+    out = format_palette([(255, 0, 0)], show_hex=False)
+    assert "#FF0000" not in out
+
+
+def test_sort_by_hue_orders_around_the_wheel():
+    from pyrava import sort_by_hue
+
+    assert sort_by_hue([(0, 0, 255), (255, 0, 0), (0, 255, 0)]) == [
+        (255, 0, 0), (0, 255, 0), (0, 0, 255),
+    ]
+
+
+def test_dominant_colors_recovers_known_bands():
+    """Sampled from a synthetic image, so no screen or randomness involved."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from pyrava import dominant_colors
+
+    img = Image.new("RGB", (60, 20))
+    px = img.load()
+    bands = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    for x in range(60):
+        for y in range(20):
+            px[x, y] = bands[x // 20]
+
+    got = dominant_colors(3, image=img, scale=1.0)
+    assert sorted(got) == sorted(bands)
+
+
+def test_dominant_colors_rejects_zero():
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from pyrava import dominant_colors
+
+    with pytest.raises(ValueError, match="at least 1"):
+        dominant_colors(0, image=Image.new("RGB", (4, 4)))
+
+
+def test_palette_preview_helpers_need_no_optional_deps():
+    """swatch/format_palette must work without Pillow installed."""
+    import importlib
+
+    mod = importlib.import_module("pyrava.palette")
+    # These three touch no optional import path.
+    assert mod.swatch((1, 2, 3))
+    assert mod.format_palette([(1, 2, 3)])
+    assert mod.sort_by_hue([(1, 2, 3)]) == [(1, 2, 3)]
+
+
+# ------------------------------------------------------- watch colouring
+
+def test_c_helper_wraps_and_strips_by_flag():
+    from pyrava.__main__ import _c
+
+    assert _c("hi", "red", enabled=True) == "\033[31mhi\033[0m"
+    assert _c("hi", "red", enabled=False) == "hi"
+    assert _c("hi", enabled=True) == "hi"  # no colours given
+
+
+def test_fmt_bool_colours_on_green_off_dim():
+    from pyrava.__main__ import _fmt_bool
+
+    assert _fmt_bool(1, color=True) == "\033[32mon\033[0m"
+    assert _fmt_bool(0, color=True) == "\033[2moff\033[0m"
+    assert _fmt_bool(1, color=False) == "on"
+
+
+def test_fmt_color_shows_degrees_not_hex():
+    """FCLR is a hue, not packed RGB -- an earlier version misleadingly
+    formatted it as #RRGGBB hex."""
+    from pyrava.__main__ import _fmt_color
+
+    assert _fmt_color(204) == "204\N{DEGREE SIGN}"
+    assert "#" not in _fmt_color(204)
+
+
+def test_fmt_color_swatch_chip_uses_truecolor():
+    from pyrava.__main__ import _fmt_color
+
+    out = _fmt_color(240, swatch_chip=True)  # 240 deg = blue
+    assert "240\N{DEGREE SIGN}" in out
+    assert "\033[48;2;0;0;255m" in out
+
+
+def test_fmt_color_no_chip_without_ansi():
+    from pyrava.__main__ import _fmt_color
+
+    out = _fmt_color(240, swatch_chip=False)
+    assert "\033[" not in out
+
+
+def test_watch_plain_fallback_has_no_escape_codes():
+    """Non-ansi watch output must be completely clean, not just cursor-free."""
+    import argparse
+    import threading
+    import time
+
+    from pyrava import __main__ as cli
+
+    info = "<DVNM=&Lamp><DVVR=&1.0.1><DVST=!1><FSTT=!1><FCLR=!204><FBRT=!200><DSTT=!0><DBRT=!10>"
+    heat = "<HTCT=!6930><HTST=!7000><HTHH=!0>"
+
+    class Fake:
+        def __init__(self):
+            self.queue = []
+
+        def send(self, headers, body):
+            flush, self.queue = self.queue, []
+            if headers.get("body-handler") == "DVIFO" or "DVIFO" in body:
+                self.queue.append("{{<body-handler=&DVIFO>}," + info + "}")
+            if headers.get("body-handler") == "HTIFO" or "HTIFO" in body:
+                self.queue.append("{{<body-handler=&HTIFO>}," + heat + "}")
+            if not flush:
+                return ""
+            return f"<<68b6b33d3b38=&500>=&{{{','.join(flush)}}}>"
+
+        def close(self):
+            pass
+
+    device = BaravaDevice("192.0.2.10", transport=Fake())
+    device.register()
+
+    original_connect = cli._connect
+    original_ansi = cli._enable_ansi
+    cli._connect = lambda args: device
+    cli._enable_ansi = lambda: False
+    try:
+        args = argparse.Namespace(
+            host="x", port=8080, timeout=5.0, json=False, interval=0.02
+        )
+
+        captured = {"out": []}
+        import builtins
+        original_print = builtins.print
+
+        def capture_print(*a, **kw):
+            captured["out"].append(" ".join(str(x) for x in a))
+
+        def stop_soon():
+            time.sleep(0.15)
+            import _thread
+            _thread.interrupt_main()
+
+        threading.Thread(target=stop_soon, daemon=True).start()
+        builtins.print = capture_print
+        try:
+            try:
+                cli.cmd_watch(args)
+            except KeyboardInterrupt:
+                pass
+        finally:
+            builtins.print = original_print
+    finally:
+        cli._connect = original_connect
+        cli._enable_ansi = original_ansi
+
+    full_output = "\n".join(captured["out"])
+    assert "\033[" not in full_output
