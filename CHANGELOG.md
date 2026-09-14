@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.0 (unreleased)
+
+### Fixed
+
+- `pyrava screen` returned only two colours regardless of `--n`, and never
+  picked up vivid accents like the magenta in a wallpaper. Both came from
+  selecting by pixel population: 0.8.0's diversity pass could only choose
+  from a median-cut pool, and median-cut allocates entries by area, so
+  small vivid regions never entered the pool at all -- while the strict
+  distinctness rule then trimmed what was left down to two.
+- `dominant_colors()` now selects by **salience**: each pixel is weighted
+  by `saturation * value^2`, binned by hue, and the heaviest bins win. A
+  small bright accent outranks a large dim background, which is what
+  "most noticeable" actually means. Each colour returned is the weighted
+  mean of its bin rather than the most extreme pixel in it.
+- Requested count is honoured. `min_hue_gap` (25 degrees) keeps results
+  distinct, but is relaxed rather than returning short when an image lacks
+  that many separate hues.
+- On the reported desktop this now yields magenta (hue 301), cyan (184),
+  two blues and warm tones, average value 0.8+, where before it returned
+  two dark navies. Added the real desktop crop as a regression fixture.
+
+### Changed
+
+- `min_saturation` default lowered 0.35 -> 0.25 and `min_value` added at
+  0.20. The salience weighting already suppresses dull colours, so a hard
+  saturation cut is no longer doing the heavy lifting and was excluding
+  usable accents.
+- Documented that `ImageGrab` captures the primary monitor only.
+
 ## 0.8.0 (unreleased)
 
 ### Fixed

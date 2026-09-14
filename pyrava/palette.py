@@ -91,48 +91,52 @@ def dominant_colors(
     n_colors: int = 5,
     *,
     scale: float = 0.15,
-    min_saturation: float = 0.35,
-    min_value: float = 0.15,
+    min_saturation: float = 0.25,
+    min_value: float = 0.20,
+    hue_bins: int = 36,
+    min_hue_gap: float = 25.0,
     diverse: bool = True,
     image=None,
 ) -> list[tuple[int, int, int]]:
-    """Sample the dominant colours of the screen (or a supplied image).
+    """Sample the most noticeable colours of the screen (or a supplied image).
 
     Returns RGB tuples, 0-255, ready to hand to ``set_zone_palette()`` or
-    ``set_gradient()``.
+    ``set_gradient()``. Requires Pillow: ``pip install "pyrava[screen]"``.
 
-    Requires Pillow: ``pip install "pyrava[screen]"``. Quantisation uses
-    Pillow's median-cut, which is fast and avoids depending on numpy and
-    scikit-learn for what is essentially palette extraction.
+    Selection is by **salience**, not by area. Counting pixels picks whatever
+    covers the most screen -- usually a dark editor background -- so a small
+    patch of bright magenta loses to a huge field of dark navy even though
+    the magenta is what you actually notice. Instead each pixel is weighted
+    by ``saturation * value^2``, binned by hue, and the heaviest bins win.
+    That surfaces small vivid regions and reliably returns distinct hues.
 
-    Straight median-cut is a poor fit for lighting. It subdivides by pixel
-    population, so on a screen dominated by one colour -- a dark editor
-    theme, say -- every palette entry lands inside that one cluster and you
-    get several colours differing by a couple of RGB units, which shows up
-    on the lamp as one flat colour repeated. ``diverse`` (on by default)
-    fixes that: it quantises to a larger pool, discards anything too dark or
-    washed out, then greedily picks entries that are far apart in hue,
-    breaking ties toward the more vivid ones.
+    Each returned colour is the weighted mean of its hue bin, so it's a
+    genuine representative rather than the single most extreme pixel in
+    that range.
 
-    ``min_saturation`` drops washed-out pixels *before* quantising, and
-    ``min_value`` drops near-black ones during selection. Both matter more
-    than any post-hoc boost, since brightening or saturating a dark grey
-    just gives a lighter grey. If fewer than ``n_colors`` clear the filters,
-    **fewer colours are returned** rather than padding the result with murky
-    ones -- three vivid colours cycled across five zones looks better than
-    three vivid and two muddy. The filters are only relaxed if nothing at
-    all survives them.
+    ``min_hue_gap`` keeps the results visually distinct: bins closer than
+    this many degrees to an already-chosen colour are skipped. If that
+    can't fill ``n_colors``, the gap is relaxed (halved, then dropped)
+    rather than returning fewer -- a couple of similar colours in a large
+    sample is fine, since re-running reshuffles which ones reach the lamp.
 
-    ``scale`` shrinks the grab before quantising. ``image`` accepts a
-    ``PIL.Image`` instead of grabbing the screen, handy for tests and for
-    sampling a file. Set ``diverse=False`` for plain population-ordered
-    median-cut.
+    ``min_saturation`` and ``min_value`` discard washed-out and near-black
+    pixels before binning; both matter far more than any post-hoc boost,
+    since brightening a dark grey just gives a lighter grey.
+
+    ``scale`` shrinks the image before sampling. ``image`` accepts a
+    ``PIL.Image`` instead of grabbing the screen. ``diverse=False`` falls
+    back to plain population-ordered median-cut.
+
+    Note: ``ImageGrab.grab()`` captures the primary monitor only. On a
+    multi-monitor setup the colours come from whichever display Windows
+    considers primary, not from everything you can see.
     """
     try:
         from PIL import Image, ImageGrab
     except ImportError as exc:  # pragma: no cover - depends on environment
         raise ImportError(
-            "screen sampling needs Pillow: pip install \"pyrava[screen]\""
+            'screen sampling needs Pillow: pip install "pyrava[screen]"'
         ) from exc
 
     if n_colors < 1:
@@ -149,26 +153,6 @@ def dominant_colors(
         )
         img = img.resize(size, resample=resample)
 
-    if min_saturation > 0:
-        # getdata() is deprecated in Pillow 12 and goes away in 14, but
-        # get_flattened_data() doesn't exist before then and the declared
-        # floor is Pillow 9.
-        reader = getattr(img, "get_flattened_data", None) or img.getdata
-        kept = [
-            px for px in reader()
-            if colorsys.rgb_to_hsv(*[c / 255 for c in px])[1] >= min_saturation
-        ]
-        # Use the filtered set whenever it has at least two distinct colours
-        # to work with. Requiring a full n_colors' worth would defeat the
-        # point: on a screen with only a couple of vivid accents, those
-        # accents are exactly what we want, even if we end up returning
-        # fewer colours than asked for. Falling back to the greys there
-        # would be worse than a short palette.
-        if len(set(kept)) >= 2:
-            filtered = Image.new("RGB", (len(kept), 1))
-            filtered.putdata(kept)
-            img = filtered
-
     if not diverse:
         quantised = img.quantize(colors=n_colors, method=Image.Quantize.MEDIANCUT)
         palette = quantised.getpalette()[: n_colors * 3]
@@ -176,72 +160,67 @@ def dominant_colors(
             (palette[i], palette[i + 1], palette[i + 2])
             for i in range(0, len(palette), 3)
         ]
-        # Order by how much of the image each colour covers, most first.
         counts = sorted(quantised.getcolors() or [], reverse=True)
         if counts and len(counts) == len(colors):
             colors = [colors[idx] for _count, idx in counts]
         return colors[:n_colors]
 
-    # Quantise to a larger pool than we need, so there are candidates
-    # outside the dominant cluster to choose between.
-    pool = max(n_colors * 8, 32)
-    quantised = img.quantize(colors=pool, method=Image.Quantize.MEDIANCUT)
-    palette = quantised.getpalette()[: pool * 3]
-    candidates = [
-        (palette[i], palette[i + 1], palette[i + 2])
-        for i in range(0, len(palette), 3)
-    ]
+    # getdata() is deprecated in Pillow 12 and removed in 14, but
+    # get_flattened_data() doesn't exist before then and our floor is 9.
+    reader = getattr(img, "get_flattened_data", None) or img.getdata
 
-    def _hsv(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
-        h, s, v = colorsys.rgb_to_hsv(*[c / 255 for c in rgb])
-        return h * 360, s, v
+    bin_width = 360.0 / hue_bins
+    weights: dict[int, float] = {}
+    sums: dict[int, list[float]] = {}
+    hue_sums: dict[int, float] = {}
 
-    def _score(rgb: tuple[int, int, int]) -> tuple[tuple[int, int, int], float, float]:
-        hue, sat, val = _hsv(rgb)
-        return rgb, hue, sat * val
+    for px in reader():
+        hue, sat, val = colorsys.rgb_to_hsv(*[c / 255 for c in px])
+        if sat < min_saturation or val < min_value:
+            continue
+        hue *= 360
+        index = int(hue // bin_width)
+        # Squaring value biases toward bright colours, which is what makes a
+        # small bright accent outrank a large dim background.
+        weight = sat * val * val
+        weights[index] = weights.get(index, 0.0) + weight
+        bucket = sums.setdefault(index, [0.0, 0.0, 0.0])
+        for i in range(3):
+            bucket[i] += px[i] * weight
+        hue_sums[index] = hue_sums.get(index, 0.0) + hue * weight
 
-    scored = [
-        _score(rgb) for rgb in candidates
-        if _hsv(rgb)[1] >= min_saturation and _hsv(rgb)[2] >= min_value
-    ]
-    if not scored:
-        # Nothing at all clears the filters -- an all-dark or all-grey
-        # screen. Relax rather than returning nothing.
-        scored = [_score(rgb) for rgb in candidates if _hsv(rgb)[2] >= min_value]
-    if not scored:
-        scored = [_score(rgb) for rgb in candidates]
-    if not scored:
-        return candidates[:n_colors]
-
-    # Greedy farthest-hue selection, seeded with the most vivid entry.
-    # Candidates too close to something already chosen are skipped outright:
-    # the whole point is that each zone reads as a different colour, and two
-    # navies ten RGB units apart are indistinguishable on the lamp. If that
-    # exhausts the candidates we return fewer colours, which set_zone_palette
-    # cycles.
-    min_gap = 40  # Manhattan distance in RGB
-
-    def too_close(rgb: tuple[int, int, int]) -> bool:
-        return any(
-            sum(abs(x - y) for x, y in zip(rgb, c[0])) < min_gap for c in chosen
+    if not weights:
+        # Nothing vivid at all -- an all-grey or all-black screen. Fall back
+        # to plain quantisation rather than returning nothing.
+        return dominant_colors(
+            n_colors, scale=1.0, diverse=False, image=img,
         )
 
-    scored.sort(key=lambda t: -t[2])
-    chosen = [scored[0]]
-    while len(chosen) < n_colors:
-        best, best_score = None, -1.0
-        for cand in scored:
-            if cand in chosen or too_close(cand[0]):
+    reps = {
+        index: (
+            tuple(round(sums[index][i] / weights[index]) for i in range(3)),
+            hue_sums[index] / weights[index],
+        )
+        for index in weights
+    }
+    order = sorted(weights, key=lambda i: -weights[i])
+
+    chosen: list[tuple[int, int, int]] = []
+    chosen_hues: list[float] = []
+    for gap in (min_hue_gap, min_hue_gap / 2, 0.0):
+        for index in order:
+            if len(chosen) >= n_colors:
+                break
+            rgb, hue = reps[index]
+            if rgb in chosen:
                 continue
-            gap = min(
-                min(abs(cand[1] - c[1]), 360 - abs(cand[1] - c[1]))
-                for c in chosen
-            )
-            # Distance dominates, vividness breaks ties.
-            score = gap * (0.5 + cand[2])
-            if score > best_score:
-                best_score, best = score, cand
-        if best is None:
-            break  # nothing left that's visibly different
-        chosen.append(best)
-    return [c[0] for c in chosen]
+            if gap and any(
+                min(abs(hue - other), 360 - abs(hue - other)) < gap
+                for other in chosen_hues
+            ):
+                continue
+            chosen.append(rgb)
+            chosen_hues.append(hue)
+        if len(chosen) >= n_colors:
+            break
+    return chosen

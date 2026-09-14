@@ -301,23 +301,24 @@ pyrava screen --preview                              # swatches, send nothing
 | `--sort` | order by hue, before gradients or assignment |
 | `--preview` | print swatches, send nothing |
 
-Selection is diversity-aware. Plain median-cut subdivides by pixel
-population, so a screen dominated by one colour — a dark editor theme, say —
-puts every palette entry inside that single cluster, and the lamp shows one
-flat colour repeated. Instead, `dominant_colors()` quantises to a larger
-pool, discards anything too dark or washed out, then greedily picks entries
-far apart in hue, skipping any that would be visually indistinguishable from
-one already chosen. If fewer than `--n` colours clear that bar you get fewer,
-which the zones cycle — three vivid colours beat three vivid and two muddy.
-`diverse=False` restores plain population-ordered median-cut.
+Selection is by **salience**, not by area. Counting pixels picks whatever
+covers the most screen — usually a dark editor background — so a small patch
+of bright magenta loses to a huge field of dark navy, even though the magenta
+is what you actually notice. Instead each pixel is weighted by
+`saturation × value²`, binned by hue, and the heaviest bins win. Each returned
+colour is the weighted mean of its bin, so it's a real representative rather
+than the single most extreme pixel.
 
-Colours below `--min-sat` (default 0.35) are dropped *before* sampling. This
-matters more than `--punch`: a typical screen is mostly grey UI chrome, so
-without the filter the dominant colours come back grey — and boosting the
-saturation of a grey leaves it grey, since 1.5× of almost nothing is still
-almost nothing. Lower it if a muted screen isn't giving you enough distinct
-colours; if too little survives the filter, the unfiltered image is used
-automatically.
+`--min-sat` (0.25) and `min_value` (0.20) drop washed-out and near-black
+pixels first; both matter far more than any post-hoc boost, since brightening
+a dark grey just gives a lighter grey. Results are kept at least `min_hue_gap`
+(25°) apart so no two zones show the same colour; if that can't fill `--n`,
+the gap is relaxed rather than returning fewer — a few similar colours in a
+large sample is fine, since re-running reshuffles which reach the lamp.
+
+**`ImageGrab` captures the primary monitor only.** On a multi-monitor setup
+the colours come from whichever display Windows considers primary, not from
+everything you can see.
 
 `dominant_colors()` uses Pillow's median-cut quantiser rather than k-means,
 which keeps this to one dependency instead of pulling in numpy and

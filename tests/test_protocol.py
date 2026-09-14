@@ -2537,20 +2537,40 @@ def test_diverse_selection_escapes_the_dominant_cluster():
 
 
 def test_diverse_selection_returns_distinct_colours():
-    """The reported symptom was three colours differing by a couple of RGB
-    units, indistinguishable on the lamp."""
+    """When the image has enough distinct hues, no two returned colours
+    should be near-identical -- the reported symptom was three navies
+    differing by a couple of RGB units."""
     pytest.importorskip("PIL")
 
     from pyrava import dominant_colors
 
-    colors = dominant_colors(5, image=_dominant_cluster_image(), scale=1.0)
+    # The fixture has 4 clearly separate hues (navy, magenta, cyan, amber).
+    colors = dominant_colors(4, image=_dominant_cluster_image(), scale=1.0)
     assert len(set(colors)) == len(colors)
-
-    # No two returned colours should be near-identical.
     for i, a in enumerate(colors):
         for b in colors[i + 1:]:
             manhattan = sum(abs(x - y) for x, y in zip(a, b))
             assert manhattan > 12, f"{a} and {b} are effectively the same"
+
+
+def test_requested_count_is_honoured_when_the_image_supports_it():
+    """The reported bug was getting 2 colours regardless of --n on a rich
+    screen. A colourful image must yield exactly n; a synthetic image with
+    only a handful of hues honestly yields what it has, which is different
+    from silently capping."""
+    pytest.importorskip("PIL")
+
+    from pyrava import dominant_colors
+
+    img = _dominant_cluster_image()  # 4 hue regions, plus some variation
+    for n in (2, 3, 4):
+        assert len(dominant_colors(n, image=img, scale=1.0)) == n
+
+    # Asking for far more than the image contains returns what exists
+    # rather than padding with duplicates.
+    lots = dominant_colors(12, image=img, scale=1.0)
+    assert 4 <= len(lots) <= 12
+    assert len(set(lots)) == len(lots)
 
 
 def test_diverse_selection_prefers_vivid_over_murky():
@@ -2610,3 +2630,50 @@ def test_min_value_filters_near_black():
     for rgb in colors:
         v = colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[2]
         assert v >= 0.45  # allow a little slack for quantisation
+
+
+def test_real_desktop_sample_finds_the_pinks():
+    """Regression fixture: a crop of a real dark-blue-dominated desktop whose
+    magenta accents the sampler repeatedly missed. Population-based
+    quantisation buried them under the navy background."""
+    pytest.importorskip("PIL")
+    import colorsys
+    from pathlib import Path
+
+    from PIL import Image
+
+    from pyrava import dominant_colors
+
+    path = Path(__file__).parent / "fixtures" / "desktop_sample.png"
+    if not path.exists():
+        pytest.skip("fixture not available")
+
+    colors = dominant_colors(7, image=Image.open(path).convert("RGB"))
+    assert len(colors) == 7
+
+    hues = [
+        colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[0] * 360 for rgb in colors
+    ]
+    # A magenta/pink somewhere in 280-340 degrees must be represented.
+    assert any(280 <= h <= 345 for h in hues), f"no pink found in {hues}"
+    # And it must not be all one hue family.
+    assert max(hues) - min(hues) > 80
+
+
+def test_real_desktop_sample_is_vivid_not_murky():
+    pytest.importorskip("PIL")
+    import colorsys
+    from pathlib import Path
+
+    from PIL import Image
+
+    from pyrava import dominant_colors
+
+    path = Path(__file__).parent / "fixtures" / "desktop_sample.png"
+    if not path.exists():
+        pytest.skip("fixture not available")
+
+    colors = dominant_colors(5, image=Image.open(path).convert("RGB"))
+    vals = [colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[2] for rgb in colors]
+    # The old failure returned everything at value ~0.21.
+    assert sum(vals) / len(vals) > 0.6
