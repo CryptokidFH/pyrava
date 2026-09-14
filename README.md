@@ -301,6 +301,14 @@ pyrava screen --preview                              # swatches, send nothing
 | `--sort` | order by hue, before gradients or assignment |
 | `--preview` | print swatches, send nothing |
 
+Colours below `--min-sat` (default 0.35) are dropped *before* sampling. This
+matters more than `--punch`: a typical screen is mostly grey UI chrome, so
+without the filter the dominant colours come back grey — and boosting the
+saturation of a grey leaves it grey, since 1.5× of almost nothing is still
+almost nothing. Lower it if a muted screen isn't giving you enough distinct
+colours; if too little survives the filter, the unfiltered image is used
+automatically.
+
 `dominant_colors()` uses Pillow's median-cut quantiser rather than k-means,
 which keeps this to one dependency instead of pulling in numpy and
 scikit-learn. If you already have a k-means palette from elsewhere, pass it

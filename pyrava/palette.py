@@ -91,7 +91,7 @@ def dominant_colors(
     n_colors: int = 5,
     *,
     scale: float = 0.15,
-    min_saturation: float = 0.0,
+    min_saturation: float = 0.35,
     image=None,
 ) -> list[tuple[int, int, int]]:
     """Sample the dominant colours of the screen (or a supplied image).
@@ -103,11 +103,17 @@ def dominant_colors(
     Pillow's median-cut, which is fast and avoids depending on numpy and
     scikit-learn for what is essentially palette extraction.
 
+    ``min_saturation`` (0-1) drops washed-out pixels *before* quantising,
+    and it matters more than any post-hoc boost. A typical screen is mostly
+    desaturated UI chrome, so without it the dominant colours are greys --
+    and boosting the saturation of a grey leaves it grey, since 1.5x of
+    almost nothing is still almost nothing. The 0.35 default matches what
+    works in practice. If too few pixels survive the filter, the unfiltered
+    image is used rather than returning near-duplicates, so raising this on
+    a muted screen degrades gracefully.
+
     ``scale`` shrinks the grab before quantising -- the default trades
-    precision for speed and is plenty for five colours. ``min_saturation``
-    (0-1) drops washed-out pixels before quantising; leave at 0 to keep
-    everything, since filtering too aggressively on a muted screen leaves
-    few pixels and yields near-duplicate colours. ``image`` accepts a
+    precision for speed and is plenty for five colours. ``image`` accepts a
     ``PIL.Image`` instead of grabbing the screen, which is handy for tests
     and for sampling a file.
     """
@@ -133,11 +139,21 @@ def dominant_colors(
         img = img.resize(size, resample=resample)
 
     if min_saturation > 0:
+        # getdata() is deprecated in Pillow 12 and goes away in 14, but
+        # get_flattened_data() doesn't exist before then and the declared
+        # floor is Pillow 9.
+        reader = getattr(img, "get_flattened_data", None) or img.getdata
         kept = [
-            px for px in img.getdata()
+            px for px in reader()
             if colorsys.rgb_to_hsv(*[c / 255 for c in px])[1] >= min_saturation
         ]
-        if kept:
+        # Use the filtered set whenever it has at least two distinct colours
+        # to work with. Requiring a full n_colors' worth would defeat the
+        # point: on a screen with only a couple of vivid accents, those
+        # accents are exactly what we want, even if we end up returning
+        # fewer colours than asked for. Falling back to the greys there
+        # would be worse than a short palette.
+        if len(set(kept)) >= 2:
             filtered = Image.new("RGB", (len(kept), 1))
             filtered.putdata(kept)
             img = filtered

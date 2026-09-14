@@ -399,7 +399,7 @@ def cmd_screen(args: argparse.Namespace) -> int:
         n = 3 if args.gradient else zone_count
 
     try:
-        colors = dominant_colors(n)
+        colors = dominant_colors(n, min_saturation=args.min_sat)
     except ImportError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -563,6 +563,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "are usually muted enough to read washed out)")
     p.add_argument("--no-punch", dest="punch", action="store_false",
                    help="send the sampled colours exactly as captured")
+    p.add_argument("--min-sat", dest="min_sat", type=float, default=0.35,
+                   metavar="0-1",
+                   help="drop pixels below this saturation before sampling "
+                        "(default 0.35). This matters more than --punch: a "
+                        "typical screen is mostly grey UI, and boosting a "
+                        "grey leaves it grey. Lower it if a muted screen "
+                        "gives too few distinct colours")
     p.add_argument("--shuffle", dest="shuffle", action="store_true", default=True,
                    help="randomise which colour lands on which zone (default). "
                         "With --n above the zone count, each run also picks a "

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.2 (unreleased)
+
+### Fixed
+
+- `pyrava screen` returned noticeably less saturated colours than an
+  equivalent k-means pipeline. Cause: `dominant_colors()` defaulted
+  `min_saturation` to 0.0, so a typical screen's dominant colours were the
+  grey UI chrome that covers most of it -- and `punch_color()` cannot
+  rescue those, since 1.5x of near-zero saturation is still near-zero. The
+  filter, not the boost, is the lever that matters. Default is now 0.35,
+  matching what works in practice, with a `--min-sat` flag to tune it and
+  an automatic fallback to the unfiltered image when too little survives.
+- `dominant_colors()` no longer calls the deprecated `Image.getdata()` when
+  Pillow offers `get_flattened_data()`, while still supporting the declared
+  Pillow 9 floor.
+
 ## 0.7.1 (unreleased)
 
 ### Added

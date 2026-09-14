@@ -2054,8 +2054,8 @@ def test_cmd_screen_preview_runs_without_a_device():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=True, sort=True, preview=True,
-        shuffle=False, seed=None,
-    )
+        shuffle=False, seed=None, min_sat=0.0,
+        )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
         rc = cli.cmd_screen(args)
@@ -2071,8 +2071,8 @@ def test_cmd_screen_missing_pillow_gives_a_clean_error(capsys):
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=False, sort=False, preview=True,
-        shuffle=False, seed=None,
-    )
+        shuffle=False, seed=None, min_sat=0.0,
+        )
     with patch("pyrava.__main__.dominant_colors",
                side_effect=ImportError('screen sampling needs Pillow: pip install "pyrava[screen]"')):
         rc = cli.cmd_screen(args)
@@ -2145,7 +2145,7 @@ def test_screen_zones_digit_targets_that_zone_not_a_group_lookup():
         args = argparse.Namespace(
             host="x", port=8080, timeout=5.0, json=False,
             n=3, gradient=False, solid=True, zones="4",
-            punch=False, sort=False, preview=False, shuffle=False, seed=None,
+            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0,
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2170,7 +2170,7 @@ def test_screen_zones_group_name_still_works():
         args = argparse.Namespace(
             host="x", port=8080, timeout=5.0, json=False,
             n=2, gradient=False, solid=True, zones="downlamp",
-            punch=False, sort=False, preview=False, shuffle=False, seed=None,
+            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0,
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0)]):
@@ -2197,11 +2197,11 @@ def test_screen_n_flag_controls_sample_count():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=7, gradient=False, solid=True, zones=None,
-        punch=False, sort=False, preview=True, shuffle=False, seed=None,
+        punch=False, sort=False, preview=True, shuffle=False, seed=None, min_sat=0.0,
         )
     with patch("pyrava.__main__.dominant_colors", return_value=[(1, 1, 1)] * 7) as m:
         cli_module().cmd_screen(args)
-    m.assert_called_once_with(7)
+    m.assert_called_once_with(7, min_saturation=0.0)
 
 
 def cli_module():
@@ -2222,13 +2222,14 @@ def _run_screen(**overrides):
         host=None, port=8080, timeout=5.0, json=False,
         n=None, gradient=False, solid=True, zones=None,
         punch=True, sort=False, preview=True, shuffle=False, seed=None,
+        min_sat=0.0,
     )
     defaults.update(overrides)
     args = argparse.Namespace(**defaults)
 
     seen = {}
 
-    def fake_dominant(count):
+    def fake_dominant(count, **kw):
         seen["n"] = count
         return [(200, 100, 50)] * count
 
@@ -2308,7 +2309,7 @@ def _screen_colors(**overrides):
     defaults = dict(
         host=None, port=8080, timeout=5.0, json=False, n=None,
         gradient=False, solid=True, zones=None, punch=False,
-        sort=False, preview=True, shuffle=True, seed=None,
+        sort=False, preview=True, shuffle=True, seed=None, min_sat=0.0,
     )
     defaults.update(overrides)
     args = argparse.Namespace(**defaults)
@@ -2320,7 +2321,7 @@ def _screen_colors(**overrides):
         return ""
 
     with patch("pyrava.__main__.dominant_colors",
-               side_effect=lambda c: _SHUFFLE_PALETTE[:c]):
+               side_effect=lambda c, **kw: _SHUFFLE_PALETTE[:c]):
         with patch("pyrava.__main__.format_palette", side_effect=grab):
             with patch("builtins.print"):
                 cli.cmd_screen(args)
@@ -2381,3 +2382,104 @@ def test_shuffle_defaults_on_with_an_opt_out():
     assert parser.parse_args(["screen"]).shuffle is True
     assert parser.parse_args(["screen", "--no-shuffle"]).shuffle is False
     assert parser.parse_args(["screen", "--seed", "7"]).seed == 7
+
+
+# ------------------------------------------ saturation filter when sampling
+
+def _screenish_image():
+    """Mostly desaturated UI chrome with a couple of vivid accents, which is
+    what a real screen usually looks like."""
+    from PIL import Image
+
+    img = Image.new("RGB", (200, 100))
+    px = img.load()
+    for x in range(200):
+        for y in range(100):
+            if x < 130:
+                px[x, y] = (32, 34, 38)      # dark editor background
+            elif x < 165:
+                px[x, y] = (200, 202, 205)   # light panel
+            elif x < 185:
+                px[x, y] = (255, 120, 0)     # orange accent
+            else:
+                px[x, y] = (0, 120, 255)     # blue accent
+    return img
+
+
+def _avg_saturation(colors):
+    import colorsys
+
+    return sum(
+        colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[1] for rgb in colors
+    ) / len(colors)
+
+
+def test_saturation_filter_is_on_by_default():
+    """Without it, a typical screen's dominant colours are grey UI chrome --
+    and punch_color can't rescue a grey, since 1.5x of ~0 saturation is
+    still ~0. The filter, not the boost, is the lever that matters."""
+    pytest.importorskip("PIL")
+
+    from pyrava import dominant_colors
+
+    img = _screenish_image()
+    unfiltered = dominant_colors(4, image=img, scale=1.0, min_saturation=0.0)
+    default = dominant_colors(4, image=img, scale=1.0)
+
+    assert _avg_saturation(default) > _avg_saturation(unfiltered)
+    assert _avg_saturation(default) > 0.9
+    # The greys must not survive the default filter.
+    assert (32, 34, 38) not in default
+    assert (200, 202, 205) not in default
+
+
+def test_saturation_filter_falls_back_when_too_little_survives():
+    """A nearly-colourless screen should still return something usable
+    rather than collapsing to a single repeated colour."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from pyrava import dominant_colors
+
+    grey = Image.new("RGB", (100, 50), (128, 128, 130))
+    grey.load()[0, 0] = (255, 0, 0)  # one lone saturated pixel
+
+    out = dominant_colors(5, image=grey, scale=1.0)
+    assert out  # didn't blow up or return nothing
+    assert len(set(out)) >= 1
+
+
+def test_min_saturation_zero_keeps_everything():
+    pytest.importorskip("PIL")
+
+    from pyrava import dominant_colors
+
+    out = dominant_colors(4, image=_screenish_image(), scale=1.0,
+                          min_saturation=0.0)
+    assert (32, 34, 38) in out  # the grey is back
+
+
+def test_cli_min_sat_flag_defaults_to_the_filter():
+    from pyrava.__main__ import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["screen"]).min_sat == 0.35
+    assert parser.parse_args(["screen", "--min-sat", "0"]).min_sat == 0.0
+
+
+def test_cli_passes_min_sat_through_to_the_sampler():
+    import argparse
+    from unittest.mock import patch
+
+    from pyrava import __main__ as cli
+
+    args = argparse.Namespace(
+        host=None, port=8080, timeout=5.0, json=False, n=3,
+        gradient=False, solid=True, zones=None, punch=False, sort=False,
+        preview=True, shuffle=False, seed=None, min_sat=0.5,
+    )
+    with patch("pyrava.__main__.dominant_colors",
+               return_value=[(1, 1, 1)] * 3) as m:
+        with patch("builtins.print"):
+            cli.cmd_screen(args)
+    m.assert_called_once_with(3, min_saturation=0.5)
