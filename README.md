@@ -293,7 +293,8 @@ pyrava screen --preview                              # swatches, send nothing
 
 
 
-https://github.com/user-attachments/assets/2285c418-ea7c-4d72-8360-4ef45a9e319b
+<img width="512" height="288" alt="pyrava_test" src="https://github.com/user-attachments/assets/823aaf0e-6538-4c9d-9887-a708554e31c2" />
+
 
 
 
