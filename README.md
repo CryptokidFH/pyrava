@@ -291,6 +291,12 @@ pyrava screen --host 192.168.1.249 --gradient --sort --zones 4
 pyrava screen --preview                              # swatches, send nothing
 ```
 
+
+
+https://github.com/user-attachments/assets/2285c418-ea7c-4d72-8360-4ef45a9e319b
+
+
+
 | Flag | Effect |
 | --- | --- |
 | `--n` | colours to sample (default 5) |
