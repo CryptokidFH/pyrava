@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import colorsys
 import logging
+import random
 import threading
 import warnings
 import time
@@ -221,6 +222,71 @@ def _expand_zone_key(key: int | str) -> tuple[int, ...]:
                 f"{sorted(ZONE_GROUPS)}"
             ) from None
     return (int(key),)
+
+
+def _lerp_rgb(
+    a: tuple[int, int, int], b: tuple[int, int, int], t: float
+) -> tuple[int, int, int]:
+    return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))  # type: ignore[return-value]
+
+
+def _span_gradient_stops(
+    colors: Sequence[tuple[int, int, int]], zone_count: int
+) -> list[list[tuple[int, int, int, int]]]:
+    """Split one continuous gradient across ``zone_count`` zones.
+
+    Treats the zones as consecutive segments of a single ring: colour ``i``
+    of N sits at fractional position ``i * zone_count / N`` along the whole
+    span, with the sequence closing back to colour 0 at the far end (the
+    same wraparound convention :func:`generate_gradient_stops` uses within
+    one zone, generalised across several). Each zone's boundary colours are
+    linearly interpolated so the last stop of one zone exactly matches the
+    first stop of the next -- no seam between zones, provided the physical
+    zones are actually adjacent in the order given.
+
+    This is a client-side construction, not a device feature: there's no
+    evidence the firmware understands a gradient spanning multiple zones,
+    and it hasn't been checked against real hardware for anything other
+    than exact even spacing within a single zone. Nothing here contradicts
+    that model -- boundary interpolation is the same linear RGB blend
+    ``MAP_LINEAR`` already does within a zone -- but treat it as unverified
+    until you've looked at it on the lamp.
+    """
+    n = len(colors)
+    if n < 2:
+        raise ValueError("need at least two colours to build a gradient")
+    if zone_count < 1:
+        raise ValueError("zone_count must be at least 1")
+
+    key_positions = [i * zone_count / n for i in range(n)]
+    keyframes = list(zip(key_positions, colors)) + [(float(zone_count), colors[0])]
+
+    def interpolate(pos: float) -> tuple[int, int, int]:
+        for (p0, c0), (p1, c1) in zip(keyframes, keyframes[1:]):
+            if p0 <= pos <= p1:
+                t = 0.0 if p1 == p0 else (pos - p0) / (p1 - p0)
+                return _lerp_rgb(c0, c1, t)
+        return keyframes[-1][1]
+
+    per_zone: list[list[tuple[int, int, int, int]]] = []
+    for zone in range(zone_count):
+        r, g, b = interpolate(float(zone))
+        stops: list[tuple[int, int, int, int]] = [(0, r, g, b)]
+        for pos, colour in keyframes[:-1]:
+            if zone < pos < zone + 1:
+                local = round((pos - zone) * 255)
+                if 0 < local < 255 and local != stops[-1][0]:
+                    stops.append((local, *colour))
+        r, g, b = interpolate(float(zone + 1))
+        if stops[-1][0] != 255:
+            stops.append((255, r, g, b))
+        per_zone.append(stops)
+    return per_zone
+
+
+#: Public alias for :func:`_span_gradient_stops`, useful for inspecting what
+#: "span" style will produce without touching a device.
+span_gradient_stops = _span_gradient_stops
 
 
 def new_sender_id(prefix: str = "~") -> str:
@@ -956,14 +1022,34 @@ class BaravaDevice:
         *,
         zones: int | str | Sequence[int | str] = ZONE_ORDER,
         smooth: bool = False,
+        style: str = "repeat",
+        seed: int | None = None,
     ) -> Batch:
         """Build an evenly spaced gradient from N colours and apply it.
 
         ``light.set_gradient([(255, 0, 0), (0, 255, 0), (0, 0, 255)])`` puts
-        the same three-colour gradient on every zone (the default). Pass
-        ``zones`` to target specific zones or a group instead:
-        ``light.set_gradient(colors, zones="lava_lamp")``,
-        ``light.set_gradient(colors, zones=[Zone.TOP, "downlamp"])``.
+        a gradient on every zone (the default). Pass ``zones`` to target
+        specific zones or a group instead: ``light.set_gradient(colors,
+        zones="lava_lamp")``, ``light.set_gradient(colors, zones=[Zone.TOP,
+        "downlamp"])``.
+
+        ``style`` controls how the *same* colour set is applied across
+        several zones:
+
+        * ``"repeat"`` (default) -- every zone gets an identical gradient,
+          same colours, same positions.
+        * ``"rotate"`` -- every zone gets the same colours, but the starting
+          point shifts by one colour per zone, so adjacent zones don't show
+          the exact same pattern. Cheap and deterministic.
+        * ``"vary"`` -- every zone gets its own independent shuffle of the
+          same colour set, so the zones look related but not identical.
+          ``seed`` makes a shuffle reproducible; omit it for a fresh one
+          each call.
+        * ``"span"`` -- treats the target zones as one continuous ring and
+          splits a single gradient across them, so the last colour of one
+          zone blends into the first colour of the next. See
+          :func:`_span_gradient_stops` for what this assumes and its
+          hardware-confirmation caveat.
 
         This is the natural hook for a generated palette -- e.g. cluster
         centres from a k-means pass over screen colours -- since it takes a
@@ -971,13 +1057,50 @@ class BaravaDevice:
         :func:`generate_gradient_stops` for the spacing rule, and its
         confirmation caveat past three colours.
         """
-        stops = generate_gradient_stops(colors)
-        target: Sequence[int | str] = (
+        colors = list(colors)
+        if len(colors) < 2:
+            raise ValueError(
+                "need at least two colours to build a gradient; use "
+                "set_zone_colors() for a single solid colour"
+            )
+
+        keys: Sequence[int | str] = (
             [zones] if isinstance(zones, (int, str)) else list(zones)
         )
-        return self.set_zone_colors(
-            gradients={key: stops for key in target}, smooth=smooth
-        )
+        target_zones: list[int] = []
+        for key in keys:
+            target_zones.extend(_expand_zone_key(key))
+        seen: set[int] = set()
+        target_zones = [z for z in target_zones if not (z in seen or seen.add(z))]
+
+        gradients: dict[int, Sequence[tuple[int, int, int, int]]]
+        if style == "repeat":
+            stops = generate_gradient_stops(colors)
+            gradients = {zone: stops for zone in target_zones}
+        elif style == "rotate":
+            n = len(colors)
+            gradients = {}
+            for i, zone in enumerate(target_zones):
+                shift = i % n
+                rotated = colors[shift:] + colors[:shift]
+                gradients[zone] = generate_gradient_stops(rotated)
+        elif style == "vary":
+            rng = random.Random(seed)
+            gradients = {}
+            for zone in target_zones:
+                shuffled = list(colors)
+                rng.shuffle(shuffled)
+                gradients[zone] = generate_gradient_stops(shuffled)
+        elif style == "span":
+            per_zone = _span_gradient_stops(colors, len(target_zones))
+            gradients = dict(zip(target_zones, per_zone))
+        else:
+            raise ValueError(
+                f"unknown style {style!r}; expected 'repeat', 'rotate', "
+                "'vary', or 'span'"
+            )
+
+        return self.set_zone_colors(gradients=gradients, smooth=smooth)
 
     def clear_zones(self, *, zones: Sequence[int] = ZONE_ORDER) -> Batch:
         """Turn every addressable zone off, the way the app's blank theme does."""

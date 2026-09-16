@@ -1,6 +1,42 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+## 1.0.0
+
+First public release. The 0.x entries below were never published; they are
+kept because each one records a protocol detail confirmed against real
+hardware, several of which contradict the vendor's written spec.
+
+### Added (pre-release)
+
+- `set_gradient(..., style=...)`: `set_gradient(colors, zones="lava_lamp")`
+  previously sent an identical gradient, same colours and positions, to
+  every zone in the group. Three additional styles: `"rotate"` (colours
+  shifted per zone, deterministic), `"vary"` (each zone independently
+  shuffles the same colours, `seed=` for reproducibility), and `"span"`
+  (treats the target zones as one continuous ring and splits a single
+  gradient across them, so each zone's last colour matches the next zone's
+  first -- a client-side construction, unverified against hardware beyond
+  the even-spacing case a single zone already confirms).
+- `span_gradient_stops()` exported for inspecting what `style="span"` will
+  send without touching a device.
+
+### Added
+
+- `--min-share` on `pyrava screen` (and `min_share=` on
+  `dominant_colors()`, default 0.01): ignores hue bins carrying less than
+  that fraction of the screen's visual weight, so a bright taskbar or
+  desktop icon can't win a slot on area-independent salience alone.
+
+### Fixed
+
+- The share floor was being abandoned whenever fewer than `n_colors` bins
+  cleared it, which let specks back in on simple screens. It is now never
+  relaxed to reach a count -- only `min_hue_gap` is. The two rules answer
+  different questions: the gap asks whether colours are distinct enough to
+  warrant separate zones, which is worth bending; the share floor asks
+  whether a colour is meaningfully on screen at all, which isn't.
+
+## 0.9.0 
 
 ### Fixed
 
@@ -30,7 +66,7 @@
   usable accents.
 - Documented that `ImageGrab` captures the primary monitor only.
 
-## 0.8.0 (unreleased)
+## 0.8.0 
 
 ### Fixed
 
@@ -52,7 +88,7 @@
   - On the reported screenshot this turns `#1B1735 #1D1736 #1B1736` (all
     value 0.21) into `#6900F4 #4A93EE #000AD4` (values 0.83-0.96).
 
-## 0.7.2 (unreleased)
+## 0.7.2 
 
 ### Fixed
 
@@ -68,7 +104,7 @@
   Pillow offers `get_flattened_data()`, while still supporting the declared
   Pillow 9 floor.
 
-## 0.7.1 (unreleased)
+## 0.7.1 
 
 ### Added
 
@@ -82,7 +118,7 @@
   colours and cancel the shuffle out; this way the shuffle chooses the
   subset and the sort arranges it.
 
-## 0.7.0 (unreleased)
+## 0.7.0 
 
 ### Changed
 
@@ -99,7 +135,7 @@
 - `_parse_zones_arg()` accepts an already-int zone, not just an argparse
   string, so non-CLI callers can pass a zone directly.
 
-## 0.6.2 (unreleased)
+## 0.6.2 
 
 ### Fixed
 
@@ -112,7 +148,7 @@
   the function references resolves at import time, to catch this class of
   bug regardless of which branch a future change touches.
 
-## 0.6.1 (unreleased)
+## 0.6.1 
 
 ### Added
 
@@ -132,7 +168,7 @@
   preview swatch, clearly labelled as illustrative since the field doesn't
   carry the saturation/brightness the swatch assumes.
 
-## 0.6.0 (unreleased)
+## 0.6.0 
 
 ### Added
 
@@ -156,7 +192,7 @@
   and is now silent, logged at debug level only. `reported_ping_interval`
   still exposes the raw value.
 
-## 0.5.0 (unreleased)
+## 0.5.0 
 
 ### Added
 
@@ -176,7 +212,7 @@
   the device's own app uses it -- all four end in `MAP_LINEAR` (0x14).
   Likely unimplemented or broken in this firmware.
 
-## 0.4.4 (unreleased)
+## 0.4.4 
 
 ### Added
 
@@ -187,7 +223,7 @@
   independent: boosting saturation deepens a colour, pinning value brightens
   it, and they compose.
 
-## 0.4.3 (unreleased)
+## 0.4.3 
 
 ### Added
 
@@ -208,7 +244,7 @@
   default, which would have brightened away exactly the dim-but-saturated
   colours the device renders well.
 
-## 0.4.2 (unreleased)
+## 0.4.2 
 
 ### Added
 
@@ -224,7 +260,7 @@
   misread). The paleness was faithful rendering of genuinely muted source
   colours, not a decode bug. `punch_color()` is the opt-in remedy.
 
-## 0.4.1 (unreleased)
+## 0.4.1 
 
 Device-safety fixes prompted by the firmware author's notes, after a rapid
 sequence of zone uploads wedged a device mid-run.
@@ -254,7 +290,7 @@ sequence of zone uploads wedged a device mid-run.
   warning now says so and points to `follow_device_interval=False` if that
   reading is wrong. (The value's meaning is an open question for the vendor.)
 
-## 0.4.0 (unreleased)
+## 0.4.0 
 
 Decoded a fourth captured payload -- a single-zone gradient -- confirming
 `FILL_ZONE`/`BUILD_GRADIENT` work identically whether scoped to one zone or
@@ -287,7 +323,7 @@ several, and revealing the stop-spacing convention.
   *this* `BaravaDevice` instance has itself sent -- it cannot see changes
   made by the app or another client.
 
-## 0.3.1 (unreleased)
+## 0.3.1 
 
 ### Added
 
@@ -298,7 +334,7 @@ several, and revealing the stop-spacing convention.
 - `examples/zone_probe.py` repurposed from discovery to verification: it now
   re-lights each named zone in sequence as a quick sanity check.
 
-## 0.3.0 (unreleased)
+## 0.3.0 
 
 Decoded three `CMPAM`/`ANDT` theme payloads captured from the device's own
 app. All three now recompile byte-for-byte, which pins down several things
@@ -328,7 +364,7 @@ app. All three now recompile byte-for-byte, which pins down several things
   start at `OPEN_HEADER`. Pass `script_header=True` for the old behaviour.
 - `gradient()` now emits `FILL_ZONE, BUILD_GRADIENT*, MAP_*`, matching the app.
 
-## 0.2.0 (unreleased)
+## 0.2.0 
 
 Aligns the client with the vendor's `barava_network_impl.md`, which describes
 a cyclical keepalive interface rather than the request/response model the
@@ -360,7 +396,7 @@ original `network.md` implied.
   queued as a response, matching the mirrored-callback design. Returning
   `None` stays the no-reply default.
 
-## 0.1.5 (unreleased)
+## 0.1.5 
 
 ### Fixed (breaking)
 
@@ -385,7 +421,7 @@ original `network.md` implied.
   - `rgb()` is unchanged but no longer used for anything -- no currently
     confirmed field is known to use packed RGB.
 
-## 0.1.4 (unreleased)
+## 0.1.4 
 
 ### Added
 
@@ -398,7 +434,7 @@ original `network.md` implied.
   `1` is the only fault code. `pyrava heater` and `pyrava watch` show the
   interpreted status instead of the raw number.
 
-## 0.1.3 (unreleased)
+## 0.1.3 
 
 ### Changed
 
@@ -408,7 +444,7 @@ original `network.md` implied.
   terminal (piped output, an unsupported console), and `--json` keeps the
   old one-object-per-line stream for scripting.
 
-## 0.1.2 (unreleased)
+## 0.1.2 
 
 ### Fixed
 
@@ -424,7 +460,7 @@ original `network.md` implied.
   warning on every call instead of once, which would have spammed a
   long-running `watch` session had it ever hit that path.
 
-## 0.1.1 (unreleased)
+## 0.1.1 
 
 ### Fixed
 
