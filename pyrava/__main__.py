@@ -399,7 +399,9 @@ def cmd_screen(args: argparse.Namespace) -> int:
         n = 3 if args.gradient else zone_count
 
     try:
-        colors = dominant_colors(n, min_saturation=args.min_sat)
+        colors = dominant_colors(
+            n, min_saturation=args.min_sat, min_share=args.min_share
+        )
     except ImportError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -428,10 +430,11 @@ def cmd_screen(args: argparse.Namespace) -> int:
     device = _connect(args)
     if args.gradient:
         if zones is not None:
-            device.set_gradient(colors, zones=zones)
+            device.set_gradient(colors, zones=zones, style=args.gradient_style,
+                                seed=args.seed)
         else:
-            device.set_gradient(colors)
-        print("gradient sent")
+            device.set_gradient(colors, style=args.gradient_style, seed=args.seed)
+        print(f"gradient sent ({args.gradient_style})")
     else:
         if zones is not None:
             device.set_zone_palette(colors, zones=zones)
@@ -557,6 +560,17 @@ def build_parser() -> argparse.ArgumentParser:
                        help="one flat colour per zone (default)")
     mode.add_argument("--gradient", action="store_true",
                        help="blend the colours instead of one flat colour per zone")
+    p.add_argument(
+        "--gradient-style", choices=["repeat", "rotate", "vary", "span"],
+        default="repeat",
+        help="with --gradient and multiple target zones: 'repeat' puts an "
+             "identical gradient on every zone (default); 'rotate' shifts "
+             "the starting colour per zone; 'vary' gives each zone its own "
+             "shuffle of the same colours (--seed for reproducibility); "
+             "'span' treats the zones as one continuous ring and splits a "
+             "single gradient across them -- unverified against real "
+             "hardware, see the client docstring",
+    )
     p.add_argument("--zones", help="zone index (e.g. 4) or group name (e.g. lava_lamp)")
     p.add_argument("--punch", dest="punch", action="store_true", default=True,
                    help="boost saturation (default; screen-sampled colours "
@@ -570,6 +584,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "typical screen is mostly grey UI, and boosting a "
                         "grey leaves it grey. Lower it if a muted screen "
                         "gives too few distinct colours")
+    p.add_argument("--min-share", dest="min_share", type=float, default=0.01,
+                   metavar="0-1",
+                   help="ignore colours covering less than this share of "
+                        "the screen's visual weight (default 0.01). Raise "
+                        "it if a taskbar or desktop icon keeps getting "
+                        "picked up; lower it to catch smaller accents")
     p.add_argument("--shuffle", dest="shuffle", action="store_true", default=True,
                    help="randomise which colour lands on which zone (default). "
                         "With --n above the zone count, each run also picks a "

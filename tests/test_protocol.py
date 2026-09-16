@@ -2054,7 +2054,7 @@ def test_cmd_screen_preview_runs_without_a_device():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=True, sort=True, preview=True,
-        shuffle=False, seed=None, min_sat=0.0,
+        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
         )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2071,7 +2071,7 @@ def test_cmd_screen_missing_pillow_gives_a_clean_error(capsys):
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=False, sort=False, preview=True,
-        shuffle=False, seed=None, min_sat=0.0,
+        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
         )
     with patch("pyrava.__main__.dominant_colors",
                side_effect=ImportError('screen sampling needs Pillow: pip install "pyrava[screen]"')):
@@ -2145,7 +2145,7 @@ def test_screen_zones_digit_targets_that_zone_not_a_group_lookup():
         args = argparse.Namespace(
             host="x", port=8080, timeout=5.0, json=False,
             n=3, gradient=False, solid=True, zones="4",
-            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0,
+            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2170,7 +2170,7 @@ def test_screen_zones_group_name_still_works():
         args = argparse.Namespace(
             host="x", port=8080, timeout=5.0, json=False,
             n=2, gradient=False, solid=True, zones="downlamp",
-            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0,
+            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0)]):
@@ -2197,11 +2197,11 @@ def test_screen_n_flag_controls_sample_count():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=7, gradient=False, solid=True, zones=None,
-        punch=False, sort=False, preview=True, shuffle=False, seed=None, min_sat=0.0,
+        punch=False, sort=False, preview=True, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
         )
     with patch("pyrava.__main__.dominant_colors", return_value=[(1, 1, 1)] * 7) as m:
         cli_module().cmd_screen(args)
-    m.assert_called_once_with(7, min_saturation=0.0)
+    m.assert_called_once_with(7, min_saturation=0.0, min_share=0.0)
 
 
 def cli_module():
@@ -2222,7 +2222,7 @@ def _run_screen(**overrides):
         host=None, port=8080, timeout=5.0, json=False,
         n=None, gradient=False, solid=True, zones=None,
         punch=True, sort=False, preview=True, shuffle=False, seed=None,
-        min_sat=0.0,
+        min_sat=0.0, min_share=0.0, gradient_style="repeat",
     )
     defaults.update(overrides)
     args = argparse.Namespace(**defaults)
@@ -2309,7 +2309,8 @@ def _screen_colors(**overrides):
     defaults = dict(
         host=None, port=8080, timeout=5.0, json=False, n=None,
         gradient=False, solid=True, zones=None, punch=False,
-        sort=False, preview=True, shuffle=True, seed=None, min_sat=0.0,
+        sort=False, preview=True, shuffle=True, seed=None, min_sat=0.0, min_share=0.0,
+        gradient_style="repeat",
     )
     defaults.update(overrides)
     args = argparse.Namespace(**defaults)
@@ -2480,13 +2481,13 @@ def test_cli_passes_min_sat_through_to_the_sampler():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False, n=3,
         gradient=False, solid=True, zones=None, punch=False, sort=False,
-        preview=True, shuffle=False, seed=None, min_sat=0.5,
-    )
+        preview=True, shuffle=False, seed=None, min_sat=0.5, min_share=0.0, gradient_style="repeat",
+        )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(1, 1, 1)] * 3) as m:
         with patch("builtins.print"):
             cli.cmd_screen(args)
-    m.assert_called_once_with(3, min_saturation=0.5)
+    m.assert_called_once_with(3, min_saturation=0.5, min_share=0.0)
 
 
 # ------------------------------------------------ palette diversity
@@ -2677,3 +2678,203 @@ def test_real_desktop_sample_is_vivid_not_murky():
     vals = [colorsys.rgb_to_hsv(*[c / 255 for c in rgb])[2] for rgb in colors]
     # The old failure returned everything at value ~0.21.
     assert sum(vals) / len(vals) > 0.6
+
+
+def test_min_share_rejects_tiny_specks():
+    """A bright taskbar icon is a few dozen pixels. Without a floor it can
+    win a hue bin outright, since salience doesn't care about area."""
+    pytest.importorskip("PIL")
+    import colorsys
+    from PIL import Image
+
+    from pyrava import dominant_colors
+
+    # A big teal field plus one tiny vivid orange speck.
+    img = Image.new("RGB", (200, 100), (0, 150, 150))
+    px = img.load()
+    for x in range(3):
+        for y in range(3):
+            px[x, y] = (255, 130, 0)
+
+    loose = dominant_colors(2, image=img, scale=1.0, min_share=0.0)
+    strict = dominant_colors(2, image=img, scale=1.0, min_share=0.05)
+
+    def hues(colors):
+        return [colorsys.rgb_to_hsv(*[c / 255 for c in r])[0] * 360 for r in colors]
+
+    # The speck's orange (~30 deg) should survive with no floor...
+    assert any(h < 60 for h in hues(loose))
+    # ...and be excluded once a floor is applied.
+    assert not any(h < 60 for h in hues(strict))
+
+
+def test_min_share_falls_back_rather_than_emptying():
+    """A screen with one dominant colour must not return nothing just
+    because no bin clears the share floor."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from pyrava import dominant_colors
+
+    img = Image.new("RGB", (100, 100), (0, 120, 200))
+    assert dominant_colors(3, image=img, scale=1.0, min_share=0.9)
+
+
+def test_cli_min_share_flag_wires_through():
+    import argparse
+    from unittest.mock import patch
+
+    from pyrava import __main__ as cli
+
+    args = argparse.Namespace(
+        host=None, port=8080, timeout=5.0, json=False, n=3,
+        gradient=False, solid=True, zones=None, punch=False, sort=False,
+        preview=True, shuffle=False, seed=None, min_sat=0.25, min_share=0.04, gradient_style="repeat",
+        )
+    with patch("pyrava.__main__.dominant_colors",
+               return_value=[(1, 1, 1)] * 3) as m:
+        with patch("builtins.print"):
+            cli.cmd_screen(args)
+    m.assert_called_once_with(3, min_saturation=0.25, min_share=0.04)
+
+
+# ------------------------------------------------ multi-zone gradient styles
+
+def test_gradient_repeat_is_the_unchanged_default():
+    """repeat must be byte-identical to the pre-existing behaviour."""
+    device, fake = _device()
+    device.set_gradient([(255, 0, 0), (0, 255, 0), (0, 0, 255)], zones="lava_lamp")
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    grad_lines = [l.strip() for l in lines if "BUILD_GRADIENT" in l]
+    # Three zones, three identical 3-stop gradients.
+    assert grad_lines == grad_lines[:3] * 3
+
+
+def test_gradient_rotate_shifts_per_zone_deterministically():
+    device, fake = _device()
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    device.set_gradient(colors, zones="lava_lamp", style="rotate")
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    grad_lines = [l.strip() for l in lines if "BUILD_GRADIENT" in l]
+    zone_grads = [grad_lines[i:i + 3] for i in range(0, 9, 3)]
+    assert len({tuple(g) for g in zone_grads}) == 3  # all different
+    # Deterministic: running again gives the exact same result.
+    device2, fake2 = _device()
+    device2.set_gradient(colors, zones="lava_lamp", style="rotate")
+    assert fake2.log[-1][1] == fake.log[-1][1]
+
+
+def test_gradient_vary_gives_each_zone_a_different_shuffle():
+    device, fake = _device()
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    device.set_gradient(colors, zones="lava_lamp", style="vary", seed=1)
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    grad_lines = [l.strip() for l in lines if "BUILD_GRADIENT" in l]
+    zone_grads = [tuple(grad_lines[i:i + 3]) for i in range(0, 9, 3)]
+    assert len(set(zone_grads)) >= 2  # not all identical
+
+    # Every zone still has exactly the same three colours, just reordered.
+    import re
+    for grad in zone_grads:
+        rgbs = {tuple(map(int, re.findall(r"-?\d+", g)[1:])) for g in grad}
+        assert rgbs == {(255, 0, 0), (0, 255, 0), (0, 0, 255)}
+
+
+def test_gradient_vary_seed_is_reproducible():
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    device, fake = _device()
+    device.set_gradient(colors, zones="lava_lamp", style="vary", seed=42)
+    a = fake.log[-1][1]
+
+    device2, fake2 = _device()
+    device2.set_gradient(colors, zones="lava_lamp", style="vary", seed=42)
+    b = fake2.log[-1][1]
+    assert a == b
+
+
+def test_gradient_span_seams_match_across_zones():
+    """The whole point of span: zone i's last colour must equal zone i+1's
+    first colour, so there's no visible seam between adjacent zones."""
+    device, fake = _device()
+    colors = [(255, 0, 0), (255, 128, 0), (255, 255, 0), (0, 255, 0),
+              (0, 255, 255), (0, 0, 255), (255, 0, 255)]
+    device.set_gradient(colors, zones="lava_lamp", style="span")
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+
+    import re
+    zone_blocks: list[list[tuple[int, int, int]]] = []
+    current: list[tuple[int, int, int]] = []
+    for line in lines:
+        if "SELECT_ZONE" in line and current:
+            zone_blocks.append(current)
+            current = []
+        if "BUILD_GRADIENT" in line:
+            nums = list(map(int, re.findall(r"-?\d+", line)))
+            current.append(tuple(nums[1:]))
+    if current:
+        zone_blocks.append(current)
+    zone_blocks = [b for b in zone_blocks if b]
+    assert len(zone_blocks) == 3
+
+    for i in range(len(zone_blocks) - 1):
+        assert zone_blocks[i][-1] == zone_blocks[i + 1][0], (
+            f"seam mismatch between zone {i} and {i + 1}"
+        )
+
+
+def test_gradient_span_wraps_the_last_zone_to_the_first_colour():
+    """The ring closes: the last zone's final colour equals the first
+    sampled colour, same wraparound convention as a single-zone gradient."""
+    device, fake = _device()
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    device.set_gradient(colors, zones="lava_lamp", style="span")
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    grad_lines = [l for l in lines if "BUILD_GRADIENT" in l]
+    import re
+    last_stop = tuple(map(int, re.findall(r"-?\d+", grad_lines[-1])))[1:]
+    assert last_stop == (255, 0, 0)
+
+
+def test_span_gradient_stops_helper_is_directly_usable():
+    from pyrava import span_gradient_stops
+
+    per_zone = span_gradient_stops([(255, 0, 0), (0, 0, 255)], 3)
+    assert len(per_zone) == 3
+    # continuity across all seams
+    for i in range(2):
+        assert per_zone[i][-1][1:] == per_zone[i + 1][0][1:]
+
+
+def test_gradient_style_rejects_unknown_value():
+    device, _ = _device()
+    with pytest.raises(ValueError, match="unknown style"):
+        device.set_gradient([(1, 0, 0), (0, 1, 0)], style="bogus")
+
+
+def test_cli_gradient_style_is_passed_through():
+    import argparse
+    from unittest.mock import patch
+
+    from pyrava import __main__ as cli
+
+    device, fake = _device()
+    original = cli._connect
+    cli._connect = lambda a: device
+    try:
+        args = argparse.Namespace(
+            host="x", port=8080, timeout=5.0, json=False,
+            n=3, gradient=True, solid=False, zones="lava_lamp",
+            punch=False, sort=False, preview=False, shuffle=False, seed=7,
+            min_sat=0.0, min_share=0.0, gradient_style="span",
+        )
+        with patch("pyrava.__main__.dominant_colors",
+                   return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
+            with patch("builtins.print"):
+                cli.cmd_screen(args)
+    finally:
+        cli._connect = original
+
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    grad_lines = [l for l in lines if "BUILD_GRADIENT" in l]
+    # span with 3 colours across 3 zones -> 2 stops each -> 6 total
+    assert len(grad_lines) == 6

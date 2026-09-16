@@ -6,6 +6,20 @@ First public release. The 0.x entries below were never published; they are
 kept because each one records a protocol detail confirmed against real
 hardware, several of which contradict the vendor's written spec.
 
+### Added (pre-release)
+
+- `set_gradient(..., style=...)`: `set_gradient(colors, zones="lava_lamp")`
+  previously sent an identical gradient, same colours and positions, to
+  every zone in the group. Three additional styles: `"rotate"` (colours
+  shifted per zone, deterministic), `"vary"` (each zone independently
+  shuffles the same colours, `seed=` for reproducibility), and `"span"`
+  (treats the target zones as one continuous ring and splits a single
+  gradient across them, so each zone's last colour matches the next zone's
+  first -- a client-side construction, unverified against hardware beyond
+  the even-spacing case a single zone already confirms).
+- `span_gradient_stops()` exported for inspecting what `style="span"` will
+  send without touching a device.
+
 ### Added
 
 - `--min-share` on `pyrava screen` (and `min_share=` on

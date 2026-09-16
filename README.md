@@ -239,6 +239,34 @@ light.set_zone_gradient(Zone.BOTTOM_INNER, (0, 7, 0, 63), (255, 0, 4, 54))
 light.clear_zones()
 ```
 
+### Gradients across several zones
+
+`set_gradient(colors, zones=...)` puts the same colour set on every target
+zone. By default that means an identical gradient repeated on each one
+(`style="repeat"`); three other styles vary that:
+
+```python
+light.set_gradient(colors, zones="lava_lamp", style="rotate")  # shifted start per zone
+light.set_gradient(colors, zones="lava_lamp", style="vary")    # independent shuffle per zone
+light.set_gradient(colors, zones="lava_lamp", style="span")    # one gradient split across them
+```
+
+| Style | What it does |
+| --- | --- |
+| `repeat` (default) | Identical gradient, same colours and positions, everywhere |
+| `rotate` | Same colours, starting point shifted by one per zone -- cheap and deterministic |
+| `vary` | Each zone gets its own independent shuffle of the same colours; `seed=` for reproducibility |
+| `span` | Treats the target zones as one continuous ring; splits a single gradient across them so each zone's last colour blends into the next zone's first |
+
+`span` is the one worth a caveat: it's a client-side construction, not a
+device feature. `span_gradient_stops()` guarantees the seam colours match
+exactly between adjacent zones, which only looks right if the physical
+zones are actually adjacent in the order you gave -- for a named group like
+`lava_lamp` that's true by construction, since the group order already
+matches the physical top-to-bottom layout. It hasn't been checked against
+real hardware for anything beyond the even-spacing case a single zone uses;
+try it and see.
+
 Zones not named are left dark, which is exactly how the app writes an
 all-off theme. `build_theme(...)` returns the script without sending it if
 you want to inspect or extend it first.
@@ -293,7 +321,8 @@ pyrava screen --preview                              # swatches, send nothing
 
 
 
-https://github.com/user-attachments/assets/2285c418-ea7c-4d72-8360-4ef45a9e319b
+<img width="512" height="288" alt="pyrava_test" src="https://github.com/user-attachments/assets/823aaf0e-6538-4c9d-9887-a708554e31c2" />
+
 
 
 
