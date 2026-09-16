@@ -57,7 +57,7 @@ from .packet import (
 )
 from .transport import HttpTransport, Transport
 
-__version__ = "0.4.3"
+__version__ = "1.0.0"
 
 __all__ = [
     "__version__",
