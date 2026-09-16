@@ -322,6 +322,13 @@ a dark grey just gives a lighter grey. Results are kept at least `min_hue_gap`
 the gap is relaxed rather than returning fewer — a few similar colours in a
 large sample is fine, since re-running reshuffles which reach the lamp.
 
+`--min-share` (default 0.01) ignores hue bins carrying less than that
+fraction of the screen's total visual weight, so a bright taskbar or desktop
+icon can't claim a slot. Raise it if something small keeps sneaking in; lower
+it to catch subtler accents. Unlike the hue gap, this floor is never relaxed
+to reach `--n` — padding a palette with icon colours is the thing it exists
+to prevent, so you may get fewer colours on a plain screen.
+
 **`ImageGrab` captures the primary monitor only.** On a multi-monitor setup
 the colours come from whichever display Windows considers primary, not from
 everything you can see.
