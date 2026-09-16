@@ -98,6 +98,7 @@ def dominant_colors(
     min_hue_gap: float = 25.0,
     diverse: bool = True,
     image=None,
+    all_screens: bool = True,
 ) -> list[tuple[int, int, int]]:
     """Sample the most noticeable colours of the screen (or a supplied image).
 
@@ -150,7 +151,7 @@ def dominant_colors(
     if n_colors < 1:
         raise ValueError("n_colors must be at least 1")
 
-    img = image if image is not None else ImageGrab.grab()
+    img = image if image is not None else ImageGrab.grab(all_screens=all_screens)
     img = img.convert("RGB")
 
     if scale and scale != 1.0:
