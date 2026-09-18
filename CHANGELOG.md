@@ -8,6 +8,20 @@ hardware, several of which contradict the vendor's written spec.
 
 ### Added (pre-release)
 
+- `build_theme(..., rotate={zone: amount})` and the same on
+  `set_zone_colors()`: rotate a zone's contents, positive for right and
+  negative for left. Confirmed byte-exact against a capture of the app's
+  own rotate effect, which revealed the structure -- an animated zone gets
+  its own header/thread pair with the rotation in a `MAIN` scope, and the
+  remaining zones go in a second pair. Zones sharing a speed share a
+  thread. Non-animated themes keep the previous single-thread layout, so
+  all four earlier captures still reproduce exactly.
+- `punch_color(..., value_gamma=)` and `--value-gamma`: raise brightness by
+  `v ** gamma`, lifting dark colours more than bright ones. Unlike
+  `value=1.0`, which flattens every colour to the same brightness and
+  discards the relative-brightness information that makes a palette
+  resemble its source, this preserves ordering and spread.
+
 - `set_gradient(..., style=...)`: `set_gradient(colors, zones="lava_lamp")`
   previously sent an identical gradient, same colours and positions, to
   every zone in the group. Three additional styles: `"rotate"` (colours

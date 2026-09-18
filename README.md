@@ -239,6 +239,56 @@ light.set_zone_gradient(Zone.BOTTOM_INNER, (0, 7, 0, 63), (255, 0, 4, 54))
 light.clear_zones()
 ```
 
+### Rotating a zone
+
+```python
+light.set_zone_colors(
+    gradients={Zone.TOP: stops},
+    rotate={Zone.TOP: 15},     # positive = right, negative = left
+)
+```
+
+Confirmed against a capture of the app's own "slow rotate right": an
+animated zone gets **its own header and thread**, with the fill in an
+atomic scope and the rotation in a `MAIN` scope, while every other zone
+goes in a second header/thread pair. Zones sharing a speed share a thread;
+different speeds get separate ones. Themes with no rotation keep the
+original single-thread layout exactly.
+
+Rotation amount 0 is refused -- the firmware author reports it deadlocks
+the animation engine.
+
+### Tuning a sampled palette
+
+`--min-sat` and brightness interact, and the useful middle ground isn't
+obvious:
+
+| Setting | Effect |
+| --- | --- |
+| `--min-sat 0.25` | more colours available, some muted |
+| `--min-sat 0.45` | more exciting, fewer candidates on a plain screen |
+| default brightness | accurate to the screen, can read dim |
+| `--value-gamma 0.5` | brighter, **relative** brightness preserved |
+| `punch_color(value=1.0)` | maximum vibrancy, all relative brightness lost |
+
+`value=1.0` is why full-bright feels less accurate: it flattens every
+colour to the same brightness, so the brightness *differences* that made
+the palette resemble your screen disappear entirely. Measured on a real
+desktop sample, the spread between the brightest and dimmest colour goes
+from 0.32 to exactly 0.00.
+
+`--value-gamma` is the middle ground. It raises brightness by `v ** gamma`,
+so dark colours lift much more than bright ones — the palette gets vivid
+while keeping its ordering:
+
+```bash
+pyrava screen --min-sat 0.45 --value-gamma 0.5
+```
+
+On the same sample that lands at mean brightness 0.95 (versus 0.90
+untouched, 1.00 pinned) while retaining a 0.11 spread. Lower the gamma
+toward 0.3 for more punch, raise it toward 0.8 for more fidelity.
+
 ### Gradients across several zones
 
 `set_gradient(colors, zones=...)` puts the same colour set on every target

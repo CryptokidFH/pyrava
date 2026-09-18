@@ -407,7 +407,9 @@ def cmd_screen(args: argparse.Namespace) -> int:
         return 1
 
     if args.punch:
-        colors = [punch_color(c) for c in colors]
+        colors = [
+            punch_color(c, value_gamma=args.value_gamma) for c in colors
+        ]
 
     if args.shuffle:
         rng = random.Random(args.seed)  # seed=None -> different every run
@@ -584,6 +586,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "typical screen is mostly grey UI, and boosting a "
                         "grey leaves it grey. Lower it if a muted screen "
                         "gives too few distinct colours")
+    p.add_argument("--value-gamma", dest="value_gamma", type=float,
+                   default=None, metavar="G",
+                   help="lift brightness by v**G with --punch. Below 1 "
+                        "brightens dark colours more than bright ones, so "
+                        "the palette gets more vivid while keeping its "
+                        "relative brightness. Try 0.5. Unset leaves "
+                        "brightness exactly as sampled")
     p.add_argument("--min-share", dest="min_share", type=float, default=0.01,
                    metavar="0-1",
                    help="ignore colours covering less than this share of "

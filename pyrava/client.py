@@ -144,6 +144,7 @@ def punch_color(
     saturation: float = 1.5,
     min_value: float | None = None,
     value: float | None = None,
+    value_gamma: float | None = None,
 ) -> tuple[int, int, int]:
     """Boost an RGB colour's saturation, leaving hue and brightness alone.
 
@@ -155,23 +156,30 @@ def punch_color(
     sits at 0.37 saturation and similar brightness, and that is what looks
     pale.
 
-    Three independent levers, all off unless asked for except saturation:
+    Four independent levers, all off unless asked for except saturation:
 
     * ``saturation`` -- multiply saturation, capped at 1.0. Default 1.5.
-    * ``min_value`` -- floor brightness. Off by default: raising it would
-      brighten exactly the dim-but-saturated colours the device handles well.
-    * ``value`` -- pin brightness outright, e.g. ``value=1.0`` to max it.
-      This is a *different* effect from boosting saturation: it makes a
-      colour brighter, not deeper, and will visibly change muted colours
-      (``(68, 43, 43)`` becomes a bright pink). Useful if you're matching a
-      pipeline that already normalises brightness this way.
+    * ``value_gamma`` -- raise brightness by ``v ** gamma``. With gamma
+      below 1 this lifts dark colours much more than bright ones, so the
+      palette gets brighter while keeping its *relative* brightness
+      ordering. Usually the best middle ground: 0.5 is a good starting
+      point.
+    * ``value`` -- pin brightness outright, e.g. ``value=1.0``. Maximum
+      vibrancy, but it flattens every colour to the same brightness and so
+      discards the relative-brightness information entirely. That loss is
+      what reads as "less accurate" against the source image.
+    * ``min_value`` -- floor brightness without touching anything above the
+      floor.
 
-    ``value`` takes precedence over ``min_value`` when both are given.
+    Precedence when several are given: ``value`` beats ``value_gamma``
+    beats ``min_value``.
     """
     h, s, v = colorsys.rgb_to_hsv(*[c / 255 for c in rgb])
     s = min(1.0, s * saturation)
     if value is not None:
         v = value
+    elif value_gamma is not None:
+        v = v ** value_gamma
     elif min_value is not None:
         v = max(min_value, v)
     r, g, b = colorsys.hsv_to_rgb(h, s, v)
@@ -849,6 +857,7 @@ class BaravaDevice:
         solids: Mapping[int | str, tuple[int, int, int]] | None = None,
         gradients: Mapping[int | str, Sequence[tuple[int, int, int, int]]] | None = None,
         *,
+        rotate: Mapping[int | str, int] | None = None,
         smooth: bool = False,
         zones: Sequence[int] = ZONE_ORDER,
     ) -> AnimationScript:
@@ -881,29 +890,78 @@ class BaravaDevice:
             header_zones.extend(_expand_zone_key(key))
         for key in (solids or {}):
             header_zones.extend(_expand_zone_key(key))
-        # Preserve first-seen order but drop duplicates -- the header just
-        # needs every touched zone selected once, order doesn't matter to
-        # the device beyond that.
         seen: set[int] = set()
         header_zones = [z for z in header_zones if not (z in seen or seen.add(z))]
 
+        # Resolve the per-zone fills once, so each thread can emit only its
+        # own zones' instructions.
+        zone_gradients: dict[int, Sequence[tuple[int, int, int, int]]] = {}
+        for key, stops in (gradients or {}).items():
+            for zone in _expand_zone_key(key):
+                zone_gradients[zone] = stops
+        zone_solids: dict[int, tuple[int, int, int]] = {}
+        for key, color in (solids or {}).items():
+            for zone in _expand_zone_key(key):
+                zone_solids[zone] = color
+                zone_gradients.pop(zone, None)
+
+        # Zones that rotate are grouped by speed. A captured theme with one
+        # rotating ring puts that ring in its own header/thread pair and
+        # every other zone in a second pair, so that's the structure copied
+        # here: one pair per distinct rotation, then one for the rest.
+        rotations: dict[int, int] = {}
+        for key, amount in (rotate or {}).items():
+            for zone in _expand_zone_key(key):
+                if int(amount) == 0:
+                    raise ValueError(
+                        "rotation amount 0 is refused: the firmware author "
+                        "reports zero rotation deadlocks the animation "
+                        "engine. Omit the zone instead."
+                    )
+                rotations[zone] = int(amount)
+
+        groups: list[tuple[list[int], int | None]] = []
+        by_speed: dict[int, list[int]] = {}
+        for zone in header_zones:
+            if zone in rotations:
+                by_speed.setdefault(rotations[zone], []).append(zone)
+        for amount, zone_list in by_speed.items():
+            groups.append((zone_list, amount))
+        static = [z for z in header_zones if z not in rotations]
+        if static or not groups:
+            groups.append((static, None))
+
+        def emit_fills(script: AnimationScript, group: Sequence[int]) -> None:
+            # Gradients first, then solids -- the order the device's own app
+            # uses, confirmed by a captured theme mixing both. Emitting in
+            # header order instead changes the bytes.
+            members = set(group)
+            for zone, stops in zone_gradients.items():
+                if zone in members:
+                    script.reset_l2()
+                    script.select_zone(zone)
+                    script.gradient(*stops, smooth=smooth)
+            for zone, (r, g, b) in zone_solids.items():
+                if zone in members:
+                    script.reset_l2()
+                    script.select_zone(zone)
+                    script.set_rgb(r, g, b)
+
         script = AnimationScript()
-        with script.header(0):
-            script.reset_l2()
-            for zone in header_zones:
-                script.select_zone(zone)
-        with script.thread(0):
-            with script.atomic():
-                for key, stops in (gradients or {}).items():
-                    for zone in _expand_zone_key(key):
-                        script.reset_l2()
-                        script.select_zone(zone)
-                        script.gradient(*stops, smooth=smooth)
-                for key, (r, g, b) in (solids or {}).items():
-                    for zone in _expand_zone_key(key):
-                        script.reset_l2()
-                        script.select_zone(zone)
-                        script.set_rgb(r, g, b)
+        for index, (group, amount) in enumerate(groups):
+            with script.header(index):
+                script.reset_l2()
+                for zone in group:
+                    script.select_zone(zone)
+            with script.thread(index):
+                with script.atomic():
+                    emit_fills(script, group)
+                if amount is not None:
+                    with script.main():
+                        if amount > 0:
+                            script.rotate_right(amount)
+                        else:
+                            script.rotate_left(-amount)
         return script
 
     def set_zone_colors(
@@ -911,6 +969,7 @@ class BaravaDevice:
         solids: Mapping[int | str, tuple[int, int, int]] | None = None,
         gradients: Mapping[int | str, Sequence[tuple[int, int, int, int]]] | None = None,
         *,
+        rotate: Mapping[int | str, int] | None = None,
         smooth: bool = False,
         zones: Sequence[int] = ZONE_ORDER,
     ) -> Batch:
@@ -926,7 +985,9 @@ class BaravaDevice:
         See :meth:`build_theme` for how overlapping groups resolve.
         """
         batch = self.upload_animation(
-            self.build_theme(solids, gradients, smooth=smooth, zones=zones)
+            self.build_theme(
+                solids, gradients, rotate=rotate, smooth=smooth, zones=zones
+            )
         )
         self._remember_theme(solids, gradients, zones)
         return batch

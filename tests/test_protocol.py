@@ -2054,7 +2054,7 @@ def test_cmd_screen_preview_runs_without_a_device():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=True, sort=True, preview=True,
-        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
+        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
         )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2071,7 +2071,7 @@ def test_cmd_screen_missing_pillow_gives_a_clean_error(capsys):
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=False, sort=False, preview=True,
-        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
+        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
         )
     with patch("pyrava.__main__.dominant_colors",
                side_effect=ImportError('screen sampling needs Pillow: pip install "pyrava[screen]"')):
@@ -2145,7 +2145,7 @@ def test_screen_zones_digit_targets_that_zone_not_a_group_lookup():
         args = argparse.Namespace(
             host="x", port=8080, timeout=5.0, json=False,
             n=3, gradient=False, solid=True, zones="4",
-            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
+            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2170,7 +2170,7 @@ def test_screen_zones_group_name_still_works():
         args = argparse.Namespace(
             host="x", port=8080, timeout=5.0, json=False,
             n=2, gradient=False, solid=True, zones="downlamp",
-            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
+            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0)]):
@@ -2197,7 +2197,7 @@ def test_screen_n_flag_controls_sample_count():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=7, gradient=False, solid=True, zones=None,
-        punch=False, sort=False, preview=True, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat",
+        punch=False, sort=False, preview=True, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
         )
     with patch("pyrava.__main__.dominant_colors", return_value=[(1, 1, 1)] * 7) as m:
         cli_module().cmd_screen(args)
@@ -2222,7 +2222,7 @@ def _run_screen(**overrides):
         host=None, port=8080, timeout=5.0, json=False,
         n=None, gradient=False, solid=True, zones=None,
         punch=True, sort=False, preview=True, shuffle=False, seed=None,
-        min_sat=0.0, min_share=0.0, gradient_style="repeat",
+        min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
     )
     defaults.update(overrides)
     args = argparse.Namespace(**defaults)
@@ -2310,7 +2310,7 @@ def _screen_colors(**overrides):
         host=None, port=8080, timeout=5.0, json=False, n=None,
         gradient=False, solid=True, zones=None, punch=False,
         sort=False, preview=True, shuffle=True, seed=None, min_sat=0.0, min_share=0.0,
-        gradient_style="repeat",
+        gradient_style="repeat", value_gamma=None,
     )
     defaults.update(overrides)
     args = argparse.Namespace(**defaults)
@@ -2481,7 +2481,7 @@ def test_cli_passes_min_sat_through_to_the_sampler():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False, n=3,
         gradient=False, solid=True, zones=None, punch=False, sort=False,
-        preview=True, shuffle=False, seed=None, min_sat=0.5, min_share=0.0, gradient_style="repeat",
+        preview=True, shuffle=False, seed=None, min_sat=0.5, min_share=0.0, gradient_style="repeat", value_gamma=None,
         )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(1, 1, 1)] * 3) as m:
@@ -2729,7 +2729,7 @@ def test_cli_min_share_flag_wires_through():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False, n=3,
         gradient=False, solid=True, zones=None, punch=False, sort=False,
-        preview=True, shuffle=False, seed=None, min_sat=0.25, min_share=0.04, gradient_style="repeat",
+        preview=True, shuffle=False, seed=None, min_sat=0.25, min_share=0.04, gradient_style="repeat", value_gamma=None,
         )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(1, 1, 1)] * 3) as m:
@@ -2865,7 +2865,7 @@ def test_cli_gradient_style_is_passed_through():
             host="x", port=8080, timeout=5.0, json=False,
             n=3, gradient=True, solid=False, zones="lava_lamp",
             punch=False, sort=False, preview=False, shuffle=False, seed=7,
-            min_sat=0.0, min_share=0.0, gradient_style="span",
+            min_sat=0.0, min_share=0.0, gradient_style="span", value_gamma=None,
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2878,3 +2878,116 @@ def test_cli_gradient_style_is_passed_through():
     grad_lines = [l for l in lines if "BUILD_GRADIENT" in l]
     # span with 3 colours across 3 zones -> 2 stops each -> 6 total
     assert len(grad_lines) == 6
+
+
+# --------------------------------------------------- rotation / animation
+
+CAPTURED_ROTATE = (
+    "0200170f0407010005170f0411120007003f125504003112aa000436140a03210f"
+    "08060201170f020f030f000f01070101050a06"
+)
+
+
+def test_captured_rotate_theme_recompiles_exactly():
+    """A dim-blue gradient on the top ring with 'slow rotate right'. Proves
+    the animated-zone structure: the rotating zone gets its own header and
+    thread with a MAIN scope, and every other zone goes in a second pair."""
+    device = BaravaDevice("192.0.2.1")
+    script = device.build_theme(
+        gradients={Zone.TOP: ((0, 7, 0, 63), (85, 4, 0, 49), (170, 0, 4, 54))},
+        rotate={Zone.TOP: 15},
+    )
+    assert script.to_hex().lower() == CAPTURED_ROTATE
+
+
+def test_rotation_splits_animated_zones_into_their_own_thread():
+    device = BaravaDevice("192.0.2.1")
+    script = device.build_theme(
+        solids={Zone.TOP: (255, 0, 0), Zone.MIDDLE_INNER: (0, 255, 0)},
+        rotate={Zone.TOP: 10},
+    )
+    lines = disassemble(script.to_hex())
+    assert len([l for l in lines if "OPEN_HEADER" in l]) == 2
+    assert len([l for l in lines if "OPEN_THREAD" in l]) == 2
+    assert any("ROTATE_RIGHT(amount=10)" in l for l in lines)
+    assert any("START_SCOPE_MAIN" in l for l in lines)
+
+
+def test_negative_rotation_goes_left():
+    device = BaravaDevice("192.0.2.1")
+    script = device.build_theme(
+        solids={Zone.TOP: (255, 0, 0)}, rotate={Zone.TOP: -8}
+    )
+    lines = "\n".join(disassemble(script.to_hex()))
+    assert "ROTATE_LEFT(amount=8)" in lines
+
+
+def test_zero_rotation_refused_at_the_theme_level():
+    device = BaravaDevice("192.0.2.1")
+    with pytest.raises(ValueError, match="rotation amount 0"):
+        device.build_theme(solids={Zone.TOP: (1, 2, 3)}, rotate={Zone.TOP: 0})
+
+
+def test_zones_sharing_a_speed_share_a_thread():
+    device = BaravaDevice("192.0.2.1")
+    script = device.build_theme(
+        solids={Zone.TOP: (255, 0, 0), Zone.MIDDLE_INNER: (0, 255, 0)},
+        rotate={"lava_lamp": 12},
+    )
+    lines = disassemble(script.to_hex())
+    # One thread for the rotating group, one for the remaining static zones.
+    assert len([l for l in lines if "OPEN_THREAD" in l]) == 2
+    assert len([l for l in lines if "ROTATE_RIGHT" in l]) == 1
+
+
+def test_different_speeds_get_separate_threads():
+    device = BaravaDevice("192.0.2.1")
+    script = device.build_theme(
+        solids={Zone.TOP: (255, 0, 0), Zone.MIDDLE_INNER: (0, 255, 0)},
+        rotate={Zone.TOP: 5, Zone.MIDDLE_INNER: 20},
+    )
+    lines = disassemble(script.to_hex())
+    assert len([l for l in lines if "OPEN_THREAD" in l]) == 3  # two speeds + static
+    assert any("ROTATE_RIGHT(amount=5)" in l for l in lines)
+    assert any("ROTATE_RIGHT(amount=20)" in l for l in lines)
+
+
+def test_no_rotation_keeps_the_single_thread_layout():
+    """Non-animated themes must be unchanged -- all four earlier captures
+    depend on the single header/thread structure."""
+    device = BaravaDevice("192.0.2.1")
+    lines = disassemble(device.build_theme({Zone.TOP: (255, 0, 0)}).to_hex())
+    assert len([l for l in lines if "OPEN_THREAD" in l]) == 1
+    assert not any("START_SCOPE_MAIN" in l for l in lines)
+
+
+def test_value_gamma_lifts_brightness_but_keeps_ordering():
+    """value=1.0 flattens every colour to the same brightness; gamma lifts
+    the mean while preserving relative differences."""
+    import colorsys
+
+    from pyrava import punch_color
+
+    samples = [(60, 20, 20), (200, 40, 40), (255, 120, 120)]
+
+    def vals(colors):
+        return [colorsys.rgb_to_hsv(*[c / 255 for c in r])[2] for r in colors]
+
+    raw = vals(samples)
+    gamma = vals([punch_color(c, value_gamma=0.5) for c in samples])
+    pinned = vals([punch_color(c, value=1.0) for c in samples])
+
+    assert sum(gamma) / 3 > sum(raw) / 3          # brighter overall
+    assert gamma == sorted(gamma)                  # ordering preserved
+    assert max(gamma) - min(gamma) > 0.01          # spread survives
+    assert max(pinned) - min(pinned) < 0.01        # pinning destroys it
+
+
+def test_value_precedence():
+    from pyrava import punch_color
+
+    c = (60, 20, 20)
+    # value beats value_gamma beats min_value
+    assert punch_color(c, value=1.0, value_gamma=0.5) == punch_color(c, value=1.0)
+    assert (punch_color(c, value_gamma=0.5, min_value=0.9)
+            == punch_color(c, value_gamma=0.5))
