@@ -83,10 +83,10 @@ class HeaterHealth(IntEnum):
     """
 
     OK = 0
-    FAULT = 1
+    FUSETRIP = 1
 
     def __str__(self) -> str:  # pragma: no cover - cosmetic
-        return "OK" if self is HeaterHealth.OK else "Fault"
+        return "OK" if self is HeaterHealth.OK else "FUSETRIP"
 
 
 # --------------------------------------------------------------------------

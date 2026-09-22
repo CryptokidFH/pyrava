@@ -95,7 +95,7 @@ def _f_to_c(fahrenheit: float | None) -> float | None:
 def describe_heater_health(raw: Any) -> str:
     """Human-readable ``HTHH`` label.
 
-    ``0`` -> ``"OK"``, ``1`` -> ``"Fault"``, anything else numeric ->
+    ``0`` -> ``"OK"``, ``1`` -> ``"FUSETRIP"``, anything else numeric ->
     ``"Fault (code N)"`` so an unseen fault code still reads sensibly instead
     of raising, and ``None`` -> ``"unknown"`` when the field is absent.
     """
