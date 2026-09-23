@@ -95,9 +95,11 @@ def _f_to_c(fahrenheit: float | None) -> float | None:
 def describe_heater_health(raw: Any) -> str:
     """Human-readable ``HTHH`` label.
 
-    ``0`` -> ``"OK"``, ``1`` -> ``"FUSETRIP"``, anything else numeric ->
-    ``"Fault (code N)"`` so an unseen fault code still reads sensibly instead
-    of raising, and ``None`` -> ``"unknown"`` when the field is absent.
+    ``0`` -> ``"OK"``, ``1`` -> ``"Fuse trip"`` (both confirmed against the
+    app, which shows the latter as "FUSETRIP"), anything else numeric ->
+    ``"Fault (code N)"`` so a code firmware adds later still reads sensibly
+    instead of raising, and ``None`` -> ``"unknown"`` when the field is
+    absent.
     """
     if raw is None:
         return "unknown"
@@ -295,6 +297,26 @@ def _span_gradient_stops(
 #: Public alias for :func:`_span_gradient_stops`, useful for inspecting what
 #: "span" style will produce without touching a device.
 span_gradient_stops = _span_gradient_stops
+
+
+def _spread_rotation(
+    rotate: int | Mapping[int | str, int] | None,
+    zones: Sequence[int],
+) -> dict[int, int] | None:
+    """Normalise a ``rotate`` argument to a per-zone mapping.
+
+    Accepts a bare int, meaning "spin every target zone at this speed", or
+    an explicit ``{zone: amount}`` mapping for per-zone control.
+    """
+    if rotate is None:
+        return None
+    if isinstance(rotate, Mapping):
+        out: dict[int, int] = {}
+        for key, amount in rotate.items():
+            for zone in _expand_zone_key(key):
+                out[zone] = int(amount)
+        return out or None
+    return {zone: int(rotate) for zone in zones}
 
 
 def new_sender_id(prefix: str = "~") -> str:
@@ -1040,6 +1062,7 @@ class BaravaDevice:
         colors: Sequence[tuple[int, int, int]],
         *,
         zones: int | str | Sequence[int | str] = ZONE_ORDER,
+        rotate: int | Mapping[int | str, int] | None = None,
     ) -> Batch:
         """Give each zone one flat colour -- no gradient, no interpolation.
 
@@ -1075,7 +1098,9 @@ class BaravaDevice:
             zone: tuple(colors[i % len(colors)])
             for i, zone in enumerate(expanded)
         }
-        return self.set_zone_colors(mapping)
+        return self.set_zone_colors(
+            mapping, rotate=_spread_rotation(rotate, expanded)
+        )
 
     def set_gradient(
         self,
@@ -1085,6 +1110,7 @@ class BaravaDevice:
         smooth: bool = False,
         style: str = "repeat",
         seed: int | None = None,
+        rotate: int | Mapping[int | str, int] | None = None,
     ) -> Batch:
         """Build an evenly spaced gradient from N colours and apply it.
 
@@ -1099,9 +1125,11 @@ class BaravaDevice:
 
         * ``"repeat"`` (default) -- every zone gets an identical gradient,
           same colours, same positions.
-        * ``"rotate"`` -- every zone gets the same colours, but the starting
+        * ``"offset"`` -- every zone gets the same colours, but the starting
           point shifts by one colour per zone, so adjacent zones don't show
-          the exact same pattern. Cheap and deterministic.
+          the exact same pattern. Cheap and deterministic. This is a static
+          reordering, *not* animation -- for a spinning zone use the
+          ``rotate=`` argument on :meth:`set_zone_colors`.
         * ``"vary"`` -- every zone gets its own independent shuffle of the
           same colour set, so the zones look related but not identical.
           ``seed`` makes a shuffle reproducible; omit it for a fresh one
@@ -1138,7 +1166,7 @@ class BaravaDevice:
         if style == "repeat":
             stops = generate_gradient_stops(colors)
             gradients = {zone: stops for zone in target_zones}
-        elif style == "rotate":
+        elif style == "offset":
             n = len(colors)
             gradients = {}
             for i, zone in enumerate(target_zones):
@@ -1155,13 +1183,24 @@ class BaravaDevice:
         elif style == "span":
             per_zone = _span_gradient_stops(colors, len(target_zones))
             gradients = dict(zip(target_zones, per_zone))
+        elif style == "rotate":
+            raise ValueError(
+                "style='rotate' was renamed to 'offset' because it collided "
+                "with the rotate= animation argument. 'offset' shifts which "
+                "colour each zone starts on (static); rotate= spins a zone's "
+                "contents (animated). Use whichever you meant."
+            )
         else:
             raise ValueError(
-                f"unknown style {style!r}; expected 'repeat', 'rotate', "
+                f"unknown style {style!r}; expected 'repeat', 'offset', "
                 "'vary', or 'span'"
             )
 
-        return self.set_zone_colors(gradients=gradients, smooth=smooth)
+        return self.set_zone_colors(
+            gradients=gradients,
+            smooth=smooth,
+            rotate=_spread_rotation(rotate, target_zones),
+        )
 
     def clear_zones(self, *, zones: Sequence[int] = ZONE_ORDER) -> Batch:
         """Turn every addressable zone off, the way the app's blank theme does."""

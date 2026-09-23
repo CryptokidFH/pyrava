@@ -258,6 +258,18 @@ original single-thread layout exactly.
 Rotation amount 0 is refused -- the firmware author reports it deadlocks
 the animation engine.
 
+From the shell, `--rotate` animates and works with either mode:
+
+```bash
+pyrava screen --rotate 15                      # spin the sampled palette
+pyrava screen --gradient --rotate -8           # gradient, spinning left
+```
+
+Don't confuse `--rotate` with `--gradient-style offset`: the style options
+are all **static** arrangements of the same colours, while `--rotate` is the
+animation. (`offset` was called `rotate` briefly during development; passing
+that name now raises an error pointing at both.)
+
 ### Tuning a sampled palette
 
 `--min-sat` and brightness interact, and the useful middle ground isn't
@@ -296,7 +308,7 @@ zone. By default that means an identical gradient repeated on each one
 (`style="repeat"`); three other styles vary that:
 
 ```python
-light.set_gradient(colors, zones="lava_lamp", style="rotate")  # shifted start per zone
+light.set_gradient(colors, zones="lava_lamp", style="offset")  # shifted start per zone
 light.set_gradient(colors, zones="lava_lamp", style="vary")    # independent shuffle per zone
 light.set_gradient(colors, zones="lava_lamp", style="span")    # one gradient split across them
 ```
@@ -304,7 +316,7 @@ light.set_gradient(colors, zones="lava_lamp", style="span")    # one gradient sp
 | Style | What it does |
 | --- | --- |
 | `repeat` (default) | Identical gradient, same colours and positions, everywhere |
-| `rotate` | Same colours, starting point shifted by one per zone -- cheap and deterministic |
+| `offset` | Same colours, starting point shifted by one per zone -- cheap and deterministic. **Static**, not animation |
 | `vary` | Each zone gets its own independent shuffle of the same colours; `seed=` for reproducibility |
 | `span` | Treats the target zones as one continuous ring; splits a single gradient across them so each zone's last colour blends into the next zone's first |
 
@@ -368,13 +380,6 @@ pyrava screen --host 192.168.1.249 --solid --zones lava_lamp --n 3
 pyrava screen --host 192.168.1.249 --gradient --sort --zones 4
 pyrava screen --preview                              # swatches, send nothing
 ```
-
-
-
-<img width="512" height="288" alt="pyrava_test" src="https://github.com/user-attachments/assets/823aaf0e-6538-4c9d-9887-a708554e31c2" />
-
-
-
 
 | Flag | Effect |
 | --- | --- |

@@ -74,12 +74,12 @@ class Privilege(IntEnum):
 class HeaterHealth(IntEnum):
     """``HTHH``: whether the heater reports a fault.
 
-    Confirmed against the app: its "Heater Status" readout shows "Ok" when
-    this is 0. Only 0 has actually been correlated against the app; ``FAULT``
-    (any nonzero value the app might show as an error) is inferred, not yet
-    observed. Use :func:`~pyrava.client.describe_heater_health` rather than
-    constructing this directly -- it degrades gracefully if a fault turns out
-    to use a code other than 1.
+    Both states are now confirmed against the app: 0 shows as "Ok" in its
+    "Heater Status" readout, and 1 shows as "FUSETRIP" -- the heater's fuse
+    has tripped, not a generic error. Use
+    :func:`~pyrava.client.describe_heater_health` rather than constructing
+    this directly; it still degrades gracefully if firmware ever adds a
+    third code.
     """
 
     OK = 0

@@ -8,6 +8,19 @@ hardware, several of which contradict the vendor's written spec.
 
 ### Added (pre-release)
 
+- `--rotate` on `pyrava screen`, plus `rotate=` on `set_gradient()` and
+  `set_zone_palette()`. Animation was reachable only through
+  `build_theme()`/`set_zone_colors()`, so the CLI had no way to produce a
+  spinning zone at all.
+- Renamed gradient style `"rotate"` to `"offset"`. It collided with the
+  `rotate=` animation argument, and `--gradient-style rotate` looked like
+  it should animate when it only reorders colours statically. The old name
+  now raises an error naming both options rather than silently doing the
+  wrong one.
+- `HeaterHealth.FAULT` renamed to `FUSETRIP` and its label to "Fuse trip",
+  matching what the app shows. Both `HTHH` states are now confirmed rather
+  than the fault side being inferred.
+
 - `build_theme(..., rotate={zone: amount})` and the same on
   `set_zone_colors()`: rotate a zone's contents, positive for right and
   negative for left. Confirmed byte-exact against a capture of the app's

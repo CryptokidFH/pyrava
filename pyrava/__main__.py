@@ -431,17 +431,19 @@ def cmd_screen(args: argparse.Namespace) -> int:
 
     device = _connect(args)
     if args.gradient:
+        kwargs = {"style": args.gradient_style, "seed": args.seed,
+                  "rotate": args.rotate}
         if zones is not None:
-            device.set_gradient(colors, zones=zones, style=args.gradient_style,
-                                seed=args.seed)
+            device.set_gradient(colors, zones=zones, **kwargs)
         else:
-            device.set_gradient(colors, style=args.gradient_style, seed=args.seed)
-        print(f"gradient sent ({args.gradient_style})")
+            device.set_gradient(colors, **kwargs)
+        spin = f", rotating {args.rotate}" if args.rotate else ""
+        print(f"gradient sent ({args.gradient_style}{spin})")
     else:
         if zones is not None:
-            device.set_zone_palette(colors, zones=zones)
+            device.set_zone_palette(colors, zones=zones, rotate=args.rotate)
         else:
-            device.set_zone_palette(colors)
+            device.set_zone_palette(colors, rotate=args.rotate)
         print("palette sent")
     return 0
 
@@ -563,11 +565,11 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--gradient", action="store_true",
                        help="blend the colours instead of one flat colour per zone")
     p.add_argument(
-        "--gradient-style", choices=["repeat", "rotate", "vary", "span"],
+        "--gradient-style", choices=["repeat", "offset", "vary", "span"],
         default="repeat",
         help="with --gradient and multiple target zones: 'repeat' puts an "
-             "identical gradient on every zone (default); 'rotate' shifts "
-             "the starting colour per zone; 'vary' gives each zone its own "
+             "identical gradient on every zone (default); 'offset' shifts "
+             "which colour each zone starts on; 'vary' gives each zone its own "
              "shuffle of the same colours (--seed for reproducibility); "
              "'span' treats the zones as one continuous ring and splits a "
              "single gradient across them -- unverified against real "
@@ -586,6 +588,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "typical screen is mostly grey UI, and boosting a "
                         "grey leaves it grey. Lower it if a muted screen "
                         "gives too few distinct colours")
+    p.add_argument("--rotate", type=int, default=None, metavar="SPEED",
+                   help="animate: spin each target zone's contents. "
+                        "Positive spins right, negative left; the app's "
+                        "'slow rotate right' is 15. 0 is refused, it "
+                        "deadlocks the animation engine")
     p.add_argument("--value-gamma", dest="value_gamma", type=float,
                    default=None, metavar="G",
                    help="lift brightness by v**G with --punch. Below 1 "

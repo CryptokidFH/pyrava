@@ -901,7 +901,7 @@ def test_describe_heater_health_known_values():
     from pyrava import describe_heater_health
 
     assert describe_heater_health(0) == "OK"
-    assert describe_heater_health(1) == "Fault"
+    assert describe_heater_health(1) == "Fuse trip"
 
 
 def test_describe_heater_health_unknown_and_missing():
@@ -917,9 +917,9 @@ def test_heater_health_enum_matches_observed_mapping():
     from pyrava import HeaterHealth
 
     assert HeaterHealth.OK == 0
-    assert HeaterHealth.FAULT == 1
+    assert HeaterHealth.FUSETRIP == 1
     assert str(HeaterHealth.OK) == "OK"
-    assert str(HeaterHealth.FAULT) == "Fault"
+    assert str(HeaterHealth.FUSETRIP) == "Fuse trip"
 
 
 def _heater_device(health_raw):
@@ -944,7 +944,7 @@ def test_device_heater_status_ok():
 
 def test_device_heater_status_fault():
     device = _heater_device(1)
-    assert device.heater_status() == "Fault"
+    assert device.heater_status() == "Fuse trip"
     assert device.is_heater_ok() is False
 
 
@@ -976,7 +976,7 @@ def test_cli_heater_status_line(capsys):
     finally:
         cli._connect = original
     out = capsys.readouterr().out
-    assert "status   Fault" in out
+    assert "status   Fuse trip" in out
 
 
 def test_cli_watch_shows_status_not_raw_code(monkeypatch):
@@ -1047,7 +1047,7 @@ def test_cli_watch_shows_status_not_raw_code(monkeypatch):
         cli._Redraw = original_redraw
 
     lines = "\n".join(captured["lines"])
-    assert "status Fault" in lines
+    assert "status Fuse trip" in lines
     assert "health 1" not in lines
 
 
@@ -2054,7 +2054,7 @@ def test_cmd_screen_preview_runs_without_a_device():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=True, sort=True, preview=True,
-        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
+        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None, rotate=None,
         )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2071,7 +2071,7 @@ def test_cmd_screen_missing_pillow_gives_a_clean_error(capsys):
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=3, gradient=False, zones=None, punch=False, sort=False, preview=True,
-        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
+        shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None, rotate=None,
         )
     with patch("pyrava.__main__.dominant_colors",
                side_effect=ImportError('screen sampling needs Pillow: pip install "pyrava[screen]"')):
@@ -2145,7 +2145,7 @@ def test_screen_zones_digit_targets_that_zone_not_a_group_lookup():
         args = argparse.Namespace(
             host="x", port=8080, timeout=5.0, json=False,
             n=3, gradient=False, solid=True, zones="4",
-            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
+            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None, rotate=None,
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2170,7 +2170,7 @@ def test_screen_zones_group_name_still_works():
         args = argparse.Namespace(
             host="x", port=8080, timeout=5.0, json=False,
             n=2, gradient=False, solid=True, zones="downlamp",
-            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
+            punch=False, sort=False, preview=False, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None, rotate=None,
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0)]):
@@ -2197,7 +2197,7 @@ def test_screen_n_flag_controls_sample_count():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False,
         n=7, gradient=False, solid=True, zones=None,
-        punch=False, sort=False, preview=True, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
+        punch=False, sort=False, preview=True, shuffle=False, seed=None, min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None, rotate=None,
         )
     with patch("pyrava.__main__.dominant_colors", return_value=[(1, 1, 1)] * 7) as m:
         cli_module().cmd_screen(args)
@@ -2222,7 +2222,7 @@ def _run_screen(**overrides):
         host=None, port=8080, timeout=5.0, json=False,
         n=None, gradient=False, solid=True, zones=None,
         punch=True, sort=False, preview=True, shuffle=False, seed=None,
-        min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None,
+        min_sat=0.0, min_share=0.0, gradient_style="repeat", value_gamma=None, rotate=None,
     )
     defaults.update(overrides)
     args = argparse.Namespace(**defaults)
@@ -2310,7 +2310,7 @@ def _screen_colors(**overrides):
         host=None, port=8080, timeout=5.0, json=False, n=None,
         gradient=False, solid=True, zones=None, punch=False,
         sort=False, preview=True, shuffle=True, seed=None, min_sat=0.0, min_share=0.0,
-        gradient_style="repeat", value_gamma=None,
+        gradient_style="repeat", value_gamma=None, rotate=None,
     )
     defaults.update(overrides)
     args = argparse.Namespace(**defaults)
@@ -2481,7 +2481,7 @@ def test_cli_passes_min_sat_through_to_the_sampler():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False, n=3,
         gradient=False, solid=True, zones=None, punch=False, sort=False,
-        preview=True, shuffle=False, seed=None, min_sat=0.5, min_share=0.0, gradient_style="repeat", value_gamma=None,
+        preview=True, shuffle=False, seed=None, min_sat=0.5, min_share=0.0, gradient_style="repeat", value_gamma=None, rotate=None,
         )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(1, 1, 1)] * 3) as m:
@@ -2729,7 +2729,7 @@ def test_cli_min_share_flag_wires_through():
     args = argparse.Namespace(
         host=None, port=8080, timeout=5.0, json=False, n=3,
         gradient=False, solid=True, zones=None, punch=False, sort=False,
-        preview=True, shuffle=False, seed=None, min_sat=0.25, min_share=0.04, gradient_style="repeat", value_gamma=None,
+        preview=True, shuffle=False, seed=None, min_sat=0.25, min_share=0.04, gradient_style="repeat", value_gamma=None, rotate=None,
         )
     with patch("pyrava.__main__.dominant_colors",
                return_value=[(1, 1, 1)] * 3) as m:
@@ -2750,17 +2750,17 @@ def test_gradient_repeat_is_the_unchanged_default():
     assert grad_lines == grad_lines[:3] * 3
 
 
-def test_gradient_rotate_shifts_per_zone_deterministically():
+def test_gradient_offset_shifts_per_zone_deterministically():
     device, fake = _device()
     colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
-    device.set_gradient(colors, zones="lava_lamp", style="rotate")
+    device.set_gradient(colors, zones="lava_lamp", style="offset")
     lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
     grad_lines = [l.strip() for l in lines if "BUILD_GRADIENT" in l]
     zone_grads = [grad_lines[i:i + 3] for i in range(0, 9, 3)]
     assert len({tuple(g) for g in zone_grads}) == 3  # all different
     # Deterministic: running again gives the exact same result.
     device2, fake2 = _device()
-    device2.set_gradient(colors, zones="lava_lamp", style="rotate")
+    device2.set_gradient(colors, zones="lava_lamp", style="offset")
     assert fake2.log[-1][1] == fake.log[-1][1]
 
 
@@ -2865,7 +2865,7 @@ def test_cli_gradient_style_is_passed_through():
             host="x", port=8080, timeout=5.0, json=False,
             n=3, gradient=True, solid=False, zones="lava_lamp",
             punch=False, sort=False, preview=False, shuffle=False, seed=7,
-            min_sat=0.0, min_share=0.0, gradient_style="span", value_gamma=None,
+            min_sat=0.0, min_share=0.0, gradient_style="span", value_gamma=None, rotate=None,
         )
         with patch("pyrava.__main__.dominant_colors",
                    return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
@@ -2991,3 +2991,93 @@ def test_value_precedence():
     assert punch_color(c, value=1.0, value_gamma=0.5) == punch_color(c, value=1.0)
     assert (punch_color(c, value_gamma=0.5, min_value=0.9)
             == punch_color(c, value_gamma=0.5))
+
+
+# --------------------------------------- screen --rotate (real animation)
+
+def _run_screen_send(**overrides):
+    """Run cmd_screen with preview off, returning the disassembled payload."""
+    import argparse
+    from unittest.mock import patch
+
+    from pyrava import __main__ as cli
+
+    device, fake = _device()
+    defaults = dict(
+        host="x", port=8080, timeout=5.0, json=False, n=3,
+        gradient=False, solid=True, zones="lava_lamp", punch=False,
+        sort=False, preview=False, shuffle=False, seed=None,
+        min_sat=0.0, min_share=0.0, gradient_style="repeat",
+        value_gamma=None, rotate=None,
+    )
+    defaults.update(overrides)
+
+    original = cli._connect
+    cli._connect = lambda a: device
+    try:
+        with patch("pyrava.__main__.dominant_colors",
+                   return_value=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
+            with patch("builtins.print"):
+                cli.cmd_screen(argparse.Namespace(**defaults))
+    finally:
+        cli._connect = original
+    return disassemble(parse_body(fake.log[-1][1])["ANDT"])
+
+
+def test_screen_rotate_actually_animates():
+    """--gradient-style rotate was a *static* reshuffle; the animated spin
+    lives on --rotate. This is the gap that made 'rotate' look broken."""
+    lines = _run_screen_send(rotate=15)
+    assert any("ROTATE_RIGHT(amount=15)" in l for l in lines)
+    assert any("START_SCOPE_MAIN" in l for l in lines)
+    assert len([l for l in lines if "OPEN_THREAD" in l]) == 2
+
+
+def test_screen_without_rotate_is_static():
+    lines = _run_screen_send()
+    assert not any("ROTATE" in l for l in lines)
+    assert not any("START_SCOPE_MAIN" in l for l in lines)
+    assert len([l for l in lines if "OPEN_THREAD" in l]) == 1
+
+
+def test_screen_negative_rotate_spins_left():
+    lines = _run_screen_send(rotate=-8)
+    assert any("ROTATE_LEFT(amount=8)" in l for l in lines)
+
+
+def test_screen_rotate_works_with_gradients_too():
+    lines = _run_screen_send(gradient=True, solid=False, rotate=12)
+    assert any("ROTATE_RIGHT(amount=12)" in l for l in lines)
+    assert any("BUILD_GRADIENT" in l for l in lines)
+
+
+def test_gradient_style_rotate_now_points_at_the_rename():
+    """The old name collided with the animation argument, so it should fail
+    loudly with a pointer rather than silently doing the static thing."""
+    device, _ = _device()
+    with pytest.raises(ValueError, match="renamed to 'offset'"):
+        device.set_gradient([(1, 0, 0), (0, 1, 0)], style="rotate")
+
+
+def test_rotate_accepts_a_bare_int_or_a_mapping():
+    device, fake = _device()
+    device.set_zone_palette([(255, 0, 0)], zones="lava_lamp", rotate=9)
+    lines = disassemble(parse_body(fake.log[-1][1])["ANDT"])
+    assert len([l for l in lines if "ROTATE_RIGHT(amount=9)" in l]) == 1
+
+    device2, fake2 = _device()
+    device2.set_zone_palette(
+        [(255, 0, 0)], zones="lava_lamp", rotate={Zone.TOP: 5}
+    )
+    lines2 = disassemble(parse_body(fake2.log[-1][1])["ANDT"])
+    assert any("ROTATE_RIGHT(amount=5)" in l for l in lines2)
+
+
+def test_heater_fusetrip_label():
+    from pyrava import HeaterHealth, describe_heater_health
+
+    assert HeaterHealth.FUSETRIP == 1
+    assert describe_heater_health(0) == "OK"
+    assert describe_heater_health(1) == "Fuse trip"
+    # An unseen code still reads sensibly.
+    assert describe_heater_health(2) == "Fault (code 2)"
