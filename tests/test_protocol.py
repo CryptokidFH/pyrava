@@ -3081,3 +3081,163 @@ def test_heater_fusetrip_label():
     assert describe_heater_health(1) == "Fuse trip"
     # An unseen code still reads sensibly.
     assert describe_heater_health(2) == "Fault (code 2)"
+
+
+def test_rotation_amount_is_a_single_byte():
+    from pyrava import AnimationScript
+    from pyrava.errors import CompileError
+
+    def rotate(amount):
+        s = AnimationScript()
+        with s.header(0):
+            s.select_zone(4)
+        with s.thread(0):
+            with s.main():
+                s.rotate_right(amount)
+        return s
+
+    assert rotate(255)  # the ceiling
+    for bad in (256, 300, -1):
+        with pytest.raises(CompileError, match="U8"):
+            rotate(bad)
+
+
+def test_fade_style_script_compiles():
+    """SCALE_COLORS in a counted loop is the shape a fade would take. The
+    semantics are unverified, but it must at least be well-formed bytecode."""
+    from pyrava import AnimationScript
+
+    s = AnimationScript()
+    with s.header(0):
+        s.reset_l2(); s.select_zone(4)
+    with s.thread(0):
+        with s.atomic():
+            s.reset_l2(); s.select_zone(4); s.set_rgb(0, 80, 255)
+        with s.loop(20):
+            s.scale_colors(230)
+
+    lines = disassemble(s.to_hex())
+    assert any("START_SCOPE_LOOP(iterations=20)" in l for l in lines)
+    assert any("SCALE_COLORS(scalar=230)" in l for l in lines)
+    assert not any("??" in l for l in lines)
+
+
+# --------------------------------------------------- snapshot / restore
+
+def test_snapshot_restores_a_cleared_zone():
+    """clear_zone drops the cleared zones from the shadow, so a snapshot has
+    to be taken first -- this is the documented save/restore pattern."""
+    device, fake = _device()
+    device.set_zone_colors(
+        gradients={"downlamp": ((0, 0, 0, 255), (128, 255, 0, 255))},
+        solids={"lava_lamp": (255, 80, 0)},
+    )
+    saved = device.snapshot_zones()
+
+    device.clear_zone("downlamp")
+    assert Zone.BOTTOM_INNER not in device.known_zone_gradients
+
+    device.restore_zones(saved)
+    assert Zone.BOTTOM_INNER in device.known_zone_gradients
+    assert device.known_zone_colors[Zone.TOP] == (255, 80, 0)
+
+    payload = parse_body(fake.log[-1][1])["ANDT"]
+    lines = "\n".join(disassemble(payload))
+    assert "BUILD_GRADIENT" in lines
+    assert "SET_RGB(r=255, g=80, b=0)" in lines
+
+
+def test_snapshot_is_an_independent_copy():
+    """Mutating the device afterwards must not corrupt the saved state."""
+    device, _ = _device()
+    device.set_zone_colors({Zone.TOP: (1, 2, 3)})
+    saved = device.snapshot_zones()
+    device.set_zone_colors({Zone.TOP: (9, 9, 9)})
+    assert saved["solids"][Zone.TOP] == (1, 2, 3)
+
+
+def test_restore_of_an_empty_snapshot_clears():
+    device, _ = _device()
+    empty = device.snapshot_zones()
+    device.set_zone_colors({Zone.TOP: (1, 2, 3)})
+    device.restore_zones(empty)
+    assert device.known_zone_colors == {}
+
+
+# ------------------------------------------------------- zones=None
+
+def test_zones_none_means_every_zone():
+    device, fake = _device()
+    device.set_zone_palette([(255, 0, 0)], zones=None)
+    a = fake.log[-1][1]
+
+    device2, fake2 = _device()
+    device2.set_zone_palette([(255, 0, 0)])
+    assert fake2.log[-1][1] == a  # default already meant "all"
+
+
+def test_zones_accepts_scalar_group_or_sequence_everywhere():
+    from pyrava.client import _resolve_zones
+
+    assert len(_resolve_zones(None)) == 5
+    assert _resolve_zones(4) == [4]
+    assert _resolve_zones("top_ooze") == [4]
+    assert len(_resolve_zones("lava_lamp")) == 3
+    assert len(_resolve_zones([Zone.TOP, "downlamp"])) == 3
+    # de-duplicates a group overlapping one of its own members
+    assert len(_resolve_zones(["lava_lamp", 4])) == 3
+
+
+def test_clear_zones_accepts_none_and_a_group():
+    device, _ = _device()
+    device.set_zone_colors({Zone.TOP: (1, 2, 3), Zone.BOTTOM_INNER: (4, 5, 6)})
+    device.clear_zones(zones="downlamp")
+    assert Zone.TOP in device.known_zone_colors        # untouched
+    assert Zone.BOTTOM_INNER not in device.known_zone_colors
+    device.clear_zones()                                # None == all
+    assert device.known_zone_colors == {}
+
+
+# --------------------------------------------- unrolled crossfade shape
+
+def test_unrolled_crossfade_is_one_script_not_many_uploads():
+    """A crossfade can be precomputed as consecutive atomic blocks in a
+    single script, so it costs one upload rather than one per frame."""
+    from pyrava import AnimationScript
+
+    def lerp(a, b, t):
+        return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+    s = AnimationScript()
+    with s.header(0):
+        s.reset_l2(); s.select_zone(4)
+    with s.thread(0):
+        for i in range(5):
+            with s.atomic():
+                s.reset_l2(); s.select_zone(4)
+                s.set_rgb(*lerp((255, 0, 0), (0, 0, 255), i / 4))
+
+    lines = disassemble(s.to_hex())
+    assert len([l for l in lines if "START_SCOPE_ATOMIC" in l]) == 5
+    assert not any("??" in l for l in lines)
+
+
+def test_gradient_crossfade_cost_tracks_stops_not_leds():
+    """Worth pinning: a gradient is defined by stops, so crossfading one is
+    not proportional to how many LEDs a zone has."""
+    from pyrava import AnimationScript
+
+    def build(stop_count):
+        s = AnimationScript()
+        with s.header(0):
+            s.reset_l2(); s.select_zone(4)
+        with s.thread(0):
+            for _ in range(4):
+                with s.atomic():
+                    s.reset_l2(); s.select_zone(4)
+                    s.gradient(*[(round(i * 255 / stop_count), 10, 20, 30)
+                                 for i in range(stop_count)])
+        return len(s.compile())
+
+    # Doubling the stops roughly doubles the script; LED count never enters.
+    assert build(4) < build(8) < build(16)

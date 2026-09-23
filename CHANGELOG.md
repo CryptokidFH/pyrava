@@ -8,6 +8,26 @@ hardware, several of which contradict the vendor's written spec.
 
 ### Added (pre-release)
 
+- `snapshot_zones()` / `restore_zones()`: capture the per-zone shadow and
+  put it back. `clear_zone()` removes the cleared zones from the shadow, so
+  restoring previously required saving both dicts by hand first.
+- `zones=` now accepts `None` (meaning every zone) anywhere it's taken, plus
+  a bare zone or group name, so callers no longer branch on whether they
+  have a zone to pass. All zone resolution goes through one helper.
+
+### Fixed (pre-release)
+
+- The per-zone shadow kept stale colours. An upload replaces the whole
+  theme, so a zone left out of a new theme is dark -- but the cleanup pass
+  only removed keys that were already absent, making it a no-op. Zones now
+  reset before the new theme is recorded, so `restore_zones()` of an empty
+  snapshot correctly reports everything off.
+
+- `examples/fade_probe.py`: isolates the unverified semantics of
+  `SCALE_COLORS`, `DIFFUSE_COLORS` and the `LOOP`/`MAIN` scopes, which no
+  captured theme exercises but which appear to be what fades would be built
+  from.
+
 - `--rotate` on `pyrava screen`, plus `rotate=` on `set_gradient()` and
   `set_zone_palette()`. Animation was reachable only through
   `build_theme()`/`set_zone_colors()`, so the CLI had no way to produce a

@@ -256,7 +256,48 @@ different speeds get separate ones. Themes with no rotation keep the
 original single-thread layout exactly.
 
 Rotation amount 0 is refused -- the firmware author reports it deadlocks
-the animation engine.
+the animation engine. The maximum is **255**: the operand is a single byte,
+and the encoder rejects anything larger rather than letting it wrap. The
+app's "slow rotate right" is 15; higher is presumably faster, though what
+the number counts (LEDs per tick? step size?) isn't confirmed.
+
+### Beyond the app's effects
+
+The bytecode is more general than the effects the app exposes. Alongside
+`MAIN` (repeat forever) there's `LOOP` (a counted scope) and several
+transforms none of the captured themes use:
+
+| Opcode | Helper | Plausible use |
+| --- | --- | --- |
+| `SCALE_COLORS` | `scale_colors(n)` | brightness scaling -- the likely fade primitive |
+| `DIFFUSE_COLORS` | `diffuse_colors(n)` | blur/smear along a ring |
+| `ROTATE_UP` / `DOWN` | `rotate_up/down(n)` | rotation on another axis |
+| `SET_RED/GREEN/BLUE` | `set_red(n)` etc. | single-channel manipulation |
+| `START_SCOPE_LOOP` | `with s.loop(n):` | counted animation sequences |
+
+So a fade is expressible in principle:
+
+```python
+with s.thread(0):
+    with s.atomic():
+        s.reset_l2(); s.select_zone(Zone.TOP); s.set_rgb(0, 80, 255)
+    with s.loop(20):
+        s.scale_colors(230)     # ~90% per tick, if it compounds
+```
+
+That compiles to valid bytecode, but **none of these opcodes appear in any
+captured theme**, so their semantics are unverified: whether the operand is
+a multiplier, whether repeated scaling compounds, and how long a tick lasts
+are all open. `examples/fade_probe.py` isolates each question:
+
+```bash
+python examples/fade_probe.py 192.168.1.249
+```
+
+A true crossfade between two colour sets is the one thing with no obvious
+primitive -- there's nothing that interpolates toward a target. Fade-out,
+swap, fade-in would give a fade *through black*, which may be close enough,
+but a real blend likely does need firmware support.
 
 From the shell, `--rotate` animates and works with either mode:
 
@@ -537,6 +578,17 @@ light.set_zone_state("lava_lamp", (255, 80, 0))
 light.set_zone_state("downlamp", (0, 40, 255))
 
 light.clear_zone("downlamp")   # lava_lamp survives untouched
+```
+
+To turn something off and put it back, snapshot first — `clear_zone()` drops
+the cleared zones from the shadow, so afterwards there's nothing left to
+restore from:
+
+```python
+saved = light.snapshot_zones()
+light.clear_zone("downlamp")
+...
+light.restore_zones(saved)
 ```
 
 **The limitation you already suspected is real.** This only knows about

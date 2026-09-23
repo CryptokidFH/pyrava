@@ -299,6 +299,28 @@ def _span_gradient_stops(
 span_gradient_stops = _span_gradient_stops
 
 
+def _resolve_zones(
+    zones: int | str | Sequence[int | str] | None,
+) -> list[int]:
+    """Normalise any ``zones`` argument to a de-duplicated list of indices.
+
+    ``None`` means every zone, which is the common case and saves callers
+    branching on it. A bare zone or group name is accepted as well as a
+    sequence mixing both.
+    """
+    if zones is None:
+        keys: Sequence[int | str] = ZONE_ORDER
+    elif isinstance(zones, (int, str)):
+        keys = [zones]
+    else:
+        keys = list(zones)
+    out: list[int] = []
+    for key in keys:
+        out.extend(_expand_zone_key(key))
+    seen: set[int] = set()
+    return [z for z in out if not (z in seen or seen.add(z))]
+
+
 def _spread_rotation(
     rotate: int | Mapping[int | str, int] | None,
     zones: Sequence[int],
@@ -881,7 +903,7 @@ class BaravaDevice:
         *,
         rotate: Mapping[int | str, int] | None = None,
         smooth: bool = False,
-        zones: Sequence[int] = ZONE_ORDER,
+        zones: int | str | Sequence[int | str] | None = None,
     ) -> AnimationScript:
         """Compose a static theme without sending it.
 
@@ -905,9 +927,7 @@ class BaravaDevice:
         Returns the script so you can inspect or extend it; pass it to
         :meth:`upload_animation`, or use :meth:`set_zone_colors` to do both.
         """
-        header_zones: list[int] = []
-        for zone in zones:
-            header_zones.extend(_expand_zone_key(zone))
+        header_zones: list[int] = _resolve_zones(zones)
         for key in (gradients or {}):
             header_zones.extend(_expand_zone_key(key))
         for key in (solids or {}):
@@ -993,7 +1013,7 @@ class BaravaDevice:
         *,
         rotate: Mapping[int | str, int] | None = None,
         smooth: bool = False,
-        zones: Sequence[int] = ZONE_ORDER,
+        zones: int | str | Sequence[int | str] | None = None,
     ) -> Batch:
         """Set each LED zone's colour in one upload.
 
@@ -1018,27 +1038,31 @@ class BaravaDevice:
         self,
         solids: Mapping[int | str, tuple[int, int, int]] | None,
         gradients: Mapping[int | str, Sequence[tuple[int, int, int, int]]] | None,
-        zones: Sequence[int],
+        zones: int | str | Sequence[int | str] | None,
     ) -> None:
         """Update the local shadow of what each zone was last told to show."""
-        touched: set[int] = set()
-        for key in zones:
+        # An upload replaces the entire theme, so every zone the header
+        # selects starts dark and only gets a colour if this call gave it
+        # one. Clearing first is what makes that true: the previous version
+        # tried to drop stale entries afterwards, but its check only removed
+        # keys that were already absent, so nothing was ever cleaned up and
+        # a zone kept its old colour in the shadow even after being turned
+        # off on the device.
+        touched: set[int] = set(_resolve_zones(zones))
+        for key in (gradients or {}):
             touched.update(_expand_zone_key(key))
+        for key in (solids or {}):
+            touched.update(_expand_zone_key(key))
+        for zone in touched:
+            self._zone_solids.pop(zone, None)
+            self._zone_gradients.pop(zone, None)
+
         for key, stops in (gradients or {}).items():
             for zone in _expand_zone_key(key):
-                touched.add(zone)
                 self._zone_gradients[zone] = tuple(stops)
-                self._zone_solids.pop(zone, None)
         for key, color in (solids or {}).items():
             for zone in _expand_zone_key(key):
-                touched.add(zone)
                 self._zone_solids[zone] = color
-                self._zone_gradients.pop(zone, None)
-        # A selected zone that got neither a solid nor a gradient is dark in
-        # this theme; drop any stale colour the shadow had for it.
-        for zone in touched:
-            if zone not in self._zone_solids and zone not in self._zone_gradients:
-                self._zone_solids.pop(zone, None)
                 self._zone_gradients.pop(zone, None)
 
     def set_zone_gradient(
@@ -1061,7 +1085,7 @@ class BaravaDevice:
         self,
         colors: Sequence[tuple[int, int, int]],
         *,
-        zones: int | str | Sequence[int | str] = ZONE_ORDER,
+        zones: int | str | Sequence[int | str] | None = None,
         rotate: int | Mapping[int | str, int] | None = None,
     ) -> Batch:
         """Give each zone one flat colour -- no gradient, no interpolation.
@@ -1085,14 +1109,7 @@ class BaravaDevice:
         if not colors:
             raise ValueError("need at least one colour")
 
-        keys: Sequence[int | str] = (
-            [zones] if isinstance(zones, (int, str)) else list(zones)
-        )
-        expanded: list[int] = []
-        for key in keys:
-            expanded.extend(_expand_zone_key(key))
-        seen: set[int] = set()
-        expanded = [z for z in expanded if not (z in seen or seen.add(z))]
+        expanded = _resolve_zones(zones)
 
         mapping = {
             zone: tuple(colors[i % len(colors)])
@@ -1106,7 +1123,7 @@ class BaravaDevice:
         self,
         colors: Sequence[tuple[int, int, int]],
         *,
-        zones: int | str | Sequence[int | str] = ZONE_ORDER,
+        zones: int | str | Sequence[int | str] | None = None,
         smooth: bool = False,
         style: str = "repeat",
         seed: int | None = None,
@@ -1153,14 +1170,7 @@ class BaravaDevice:
                 "set_zone_colors() for a single solid colour"
             )
 
-        keys: Sequence[int | str] = (
-            [zones] if isinstance(zones, (int, str)) else list(zones)
-        )
-        target_zones: list[int] = []
-        for key in keys:
-            target_zones.extend(_expand_zone_key(key))
-        seen: set[int] = set()
-        target_zones = [z for z in target_zones if not (z in seen or seen.add(z))]
+        target_zones = _resolve_zones(zones)
 
         gradients: dict[int, Sequence[tuple[int, int, int, int]]]
         if style == "repeat":
@@ -1202,13 +1212,14 @@ class BaravaDevice:
             rotate=_spread_rotation(rotate, target_zones),
         )
 
-    def clear_zones(self, *, zones: Sequence[int] = ZONE_ORDER) -> Batch:
+    def clear_zones(
+        self, *, zones: int | str | Sequence[int | str] | None = None
+    ) -> Batch:
         """Turn every addressable zone off, the way the app's blank theme does."""
         batch = self.upload_animation(self.build_theme(zones=zones))
-        for zone in zones:
-            for z in _expand_zone_key(zone):
-                self._zone_solids.pop(z, None)
-                self._zone_gradients.pop(z, None)
+        for z in _resolve_zones(zones):
+            self._zone_solids.pop(z, None)
+            self._zone_gradients.pop(z, None)
         return batch
 
     @property
@@ -1220,6 +1231,37 @@ class BaravaDevice:
     def known_zone_gradients(self) -> dict[int, tuple[tuple[int, int, int, int], ...]]:
         """Gradient stops this session last set, by zone. See :meth:`set_zone_state`."""
         return dict(self._zone_gradients)
+
+    def snapshot_zones(self) -> dict[str, Any]:
+        """Capture what this session currently believes every zone is showing.
+
+        Pair with :meth:`restore_zones` to turn something off and put it back:
+
+        .. code-block:: python
+
+            saved = light.snapshot_zones()
+            light.clear_zone("downlamp")
+            ...
+            light.restore_zones(saved)
+
+        Take the snapshot *before* clearing --- :meth:`clear_zone` drops the
+        cleared zones from the shadow, so afterwards there is nothing left to
+        restore from. Same caveat as :meth:`set_zone_state`: this reflects
+        only what this ``BaravaDevice`` has itself sent, since the protocol
+        offers no way to read the device's real state back.
+        """
+        return {
+            "solids": dict(self._zone_solids),
+            "gradients": dict(self._zone_gradients),
+        }
+
+    def restore_zones(self, snapshot: Mapping[str, Any], *, smooth: bool = False) -> Batch:
+        """Re-send a :meth:`snapshot_zones` result, replacing the whole theme."""
+        return self.set_zone_colors(
+            dict(snapshot.get("solids") or {}),
+            dict(snapshot.get("gradients") or {}),
+            smooth=smooth,
+        )
 
     def set_zone_state(
         self, key: int | str, color: tuple[int, int, int] | None, *, smooth: bool = False
